@@ -1,0 +1,179 @@
+# ps-qa
+
+Drive a running [Blitz](https://github.com/DioxusLabs/blitz) app through its MCP
+control socket and assert what the renderer actually did.
+
+Not a benchmark and not a unit-test runner. It connects to a live application,
+moves a real pointer, and reads back the layout boxes the engine computed — so
+it can tell a control that works from one that is present in the tree, correctly
+named, and `0x0` on screen.
+
+## Why it exists
+
+A DOM-only test environment cannot answer the questions that matter for a
+desktop UI. It has no compositor, no hit-testing, and no layout, so it reports a
+node as fine while the user sees nothing. Three failure classes make the point,
+all of them found in a real app whose unit suite was green at the time:
+
+- **A dialog that could not be dismissed.** Its root was re-parented with
+  `document.body.append`, the engine reallocated the slot, and the node that
+  painted was no longer the node the handlers were bound to. Every exit was
+  inert, with no error. 68 of that surface's 84 controls sat unreachable behind
+  it.
+- **A rename pencil that never opened its editor.** The row around it was a
+  `role="button"` that folded on `click`, and the framework delegates `click`,
+  so the pencil's `stopPropagation` lost the race.
+- **Icons that laid out perfectly and drew nothing.** Correct box, correct
+  stroke colour, no artwork — because the `<use href="#sprite">` resolved
+  against a document the rasteriser never saw.
+
+None of those are visible without the running renderer.
+
+## How it connects
+
+The app writes a descriptor when built with its inspector feature:
+
+```json
+{
+  "protocolVersion": 1,
+  "pid": 62904,
+  "address": "unix:///path/to/blitz-control.sock",
+  "renderer": "blitz"
+}
+```
+
+`ps-qa` reads `$TAURI_BLITZ_CONTROL_DESCRIPTOR` (falling back to a temp
+directory), checks the pid is live, connects to that Unix socket, and speaks
+**MCP** over it: `initialize`, `tools/list`, then `tools/call` against
+`blitz.agent.control` (drive) and `blitz.diagnostics` (inspect).
+
+The framing is length-delimited, **not** newline-delimited and not WebSocket:
+
+```
+u32 BE length | u8 kind (0=Text, 1=Binary, 2=Ping, 3=Pong, 4=Close) | payload
+```
+
+`length` counts the kind byte. `Text` payloads are UTF-8 JSON-RPC. Responses are
+matched by JSON-RPC id, because the server also pushes notifications on the same
+socket — a client that returns the next frame it sees will eventually hand back
+a console message as though it were the answer.
+
+One connection serves a whole run.
+
+## Usage
+
+```sh
+ps-qa list                       # every check, what it drives, what it asserts
+ps-qa qa                         # run them all
+ps-qa qa dialog                  # one group
+ps-qa qa dialog-cancel-dismisses # one check, by id
+```
+
+`list` needs no running app. Everything else does. Exit code is 1 if any check
+fails, so it drops into CI unchanged.
+
+`QA_TRACE=1` prints the node each check presses, which is how you tell "the
+control is broken" from "the check pressed the wrong thing".
+
+### Diagnosing, without writing a check
+
+```sh
+ps-qa layout "<name>"     # live boxes: x, y, w, h per matching node
+ps-qa dom "<name>" 6      # attributes plus the ancestor chain
+ps-qa paint "<name>"      # the colours the renderer resolved
+ps-qa press "<name>"      # a real pointer: move, down, up
+ps-qa click "<name>"      # a synthesised click at a node id
+ps-qa nodes               # tree size and a role histogram
+```
+
+`press` and `click` are not interchangeable, and the difference is diagnostic. A
+control that acts on `mousedown` works under `press` and does nothing under
+`click`. When someone reports a control working that the harness calls dead,
+this is the pair that tells them apart.
+
+`dom` is usually the fastest way to the answer: a control that writes its state
+but never appears is nearly always a hidden or zero-sized *ancestor*, which the
+chain shows immediately.
+
+## Writing a check
+
+A check is a precondition, an action, and an assertion about the state after it:
+
+```rust
+Check {
+    id: "dialog-cancel-dismisses",
+    group: "dialog",
+    what: "the fork dialog's Cancel actually dismisses it",
+    hover: None,
+    click: Some("Cancel"),
+    press: true,
+    subject: "Start fork",
+    expect: Expect::Vanishes,
+    panel_only: false,
+}
+```
+
+| Expectation | Passes when |
+| --- | --- |
+| `Paints` | the subject exists, is visible, and has a **non-zero box** |
+| `Vanishes` | nothing matching is on screen (it may remain in the tree) |
+| `PaintsMore` | more matching nodes are on screen than before |
+| `Grows` | more matching nodes are in the tree than before |
+| `Holds` | the count did not change |
+| `Absent` | no matching node at all |
+
+`Paints` is the one that earns its keep. A node can be in the tree, correctly
+named, and invisible; that is what a dead control looks like from the outside.
+
+Prefer `Vanishes` to `Absent` for anything that closes — a dismissed dialog is
+usually still in the tree at `0x0`, so asking for absence reports a working
+control as broken.
+
+### Mutation-test every check
+
+A check that has only ever passed proves nothing. Reintroduce the bug, confirm
+it goes red, restore the fix, confirm it goes green. Two of the checks here were
+wrong when first written and passed anyway:
+
+- A `Paints` assertion on `textbox` stayed green while the control was dead,
+  because other textboxes on the surface always paint.
+- A name-based subject was satisfied by the *pencil*, since the control and the
+  editor it opens share an accessible name.
+
+Both were caught by breaking the app on purpose. Neither would have been caught
+by running the check.
+
+## Gotchas that cost real time
+
+- **A dirty instance poisons a delta.** `PaintsMore` and `Grows` compare against
+  a baseline, so an editor left open by an earlier press is already counted.
+  Restore a pristine profile before a run.
+- **Cargo will not rebuild if the source mtime lands in the same minute.** The
+  build reports `Finished` in 0.4s having compiled nothing, and you test a stale
+  binary while believing you tested the fix. Check for a `Compiling` line.
+- **Retained views keep real boxes.** A pane held behind the visible one reports
+  `visible` nodes with sensible geometry, so a name can resolve to the wrong
+  surface. Filter by the pane, or resolve the node id through the surface
+  subtree.
+- **Click cost proves nothing.** "Acknowledged in 0.01ms" reads like a detached
+  handler; a control that works reports the same.
+
+## Building
+
+```sh
+cargo build --release
+cargo test
+```
+
+Nothing here may pull in tauri, winit, wgpu or blitz. The protocol types come
+from `blitz-control-protocol` precisely so this binary can speak the wire
+without building the renderer that serves it — depending on the runtime for the
+same types would build a browser engine to send a wheel event.
+`cargo tree` is the check.
+
+## Status
+
+The check list in `src/qa.rs` is currently AgencyZero's. Making the harness
+serve a second application means lifting three tables out of the binary and
+letting the app supply them: the surfaces to sweep, the native file panels that
+cannot be driven, and the checks themselves. Everything else is already generic.
