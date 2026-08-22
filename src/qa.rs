@@ -81,6 +81,24 @@ pub enum Expect {
     PaintsMore,
     /// The count of matching nodes did not change.
     Holds,
+    /// A node matching *both* a name and a role paints.
+    ///
+    /// The precise form of [`Paints`](Expect::Paints), for the common case
+    /// where a control and the thing it opens share an accessible name.
+    /// `EditableTitle` does exactly that: `Rename e` resolves to a button that
+    /// always paints and a textbox that paints only while editing, so a
+    /// name-only `Paints` is satisfied by the pencil whether or not the editor
+    /// ever opens.
+    ///
+    /// A count-based assertion is not the answer either. `PaintsMore` over
+    /// every `textbox` in the tree is fragile to whatever else happens to be
+    /// on screen - a composer, a search field, an editor left open by an
+    /// earlier check - and reported `2 -> 2` on a run where the editor
+    /// demonstrably opened. Asking about one node by name and role is the
+    /// question the check actually means.
+    ///
+    /// Written as `role:name`, e.g. `textbox:Rename e`.
+    PaintsNamed,
 }
 
 /// One thing that must be true of the running panel.
@@ -96,6 +114,15 @@ pub struct Check {
     pub group: &'static str,
     /// What this proves, in the words you would use to report it.
     pub what: &'static str,
+    /// Press this first, to reach the surface the check is about.
+    ///
+    /// Checks run in sequence against one instance and start wherever the app
+    /// opens, so anything not on that first surface is unreachable without a
+    /// navigation step. `Rename project` lives only on the project surface,
+    /// and a check for it failed with "no visible, enabled, sized button" -
+    /// which reads as a missing control rather than a check that never got
+    /// there.
+    pub open: Option<&'static str>,
     /// Hover this node first, if the control is revealed on hover.
     pub hover: Option<&'static str>,
     /// Click this node, if the check is about an action.
@@ -225,6 +252,25 @@ pub fn verdict(
                     "{} node(s) matching {:?} should not exist",
                     found.len(),
                     check.subject
+                ));
+            }
+        }
+        Expect::PaintsNamed => {
+            let (role, name) = check
+                .subject
+                .split_once(':')
+                .unwrap_or(("", check.subject));
+            let hit = after
+                .iter()
+                .filter(|node| node.role == role && node.name.contains(name))
+                .find(|node| paints(node));
+            if hit.is_none() {
+                let present = after
+                    .iter()
+                    .filter(|node| node.role == role && node.name.contains(name))
+                    .count();
+                return Err(format!(
+                    "no {role} named {name:?} is on screen ({present} in the tree)"
                 ));
             }
         }

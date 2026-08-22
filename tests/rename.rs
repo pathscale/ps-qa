@@ -22,13 +22,18 @@ pub fn checks() -> Vec<Check> {
             id: "rename-opens-editor",
             group: "rename",
             what: "pressing the pencil opens an editor the owner can type into",
+            // The app may open on either surface depending on what the profile
+            // last had focused, and `Rename ` alone matched the *project*
+            // header's pencil on a run that started there. Naming Home and a
+            // specific row makes the check about the control it says it is.
+            open: Some("Home"),
             hover: None,
             // Pressed, not clicked. The editor opens on `mousedown` so the
             // `role="button"` row cannot swallow the press first, and a
             // synthesised `click` therefore does nothing at all. Measured
             // before the fix: the row folded (+30 nodes) and the textbox
             // stayed `0x0`. After: `0x0 HIDDEN` -> `300x21`.
-            click: Some("Rename "),
+            click: Some("Rename e"),
             press: true,
             /*
              * `Grows`, counting textboxes that are actually on screen.
@@ -58,10 +63,48 @@ pub fn checks() -> Vec<Check> {
              * `scripts/button-sweep.sh` restores the pristine profile for
              * exactly this reason.
              */
-            subject: "textbox",
-            expect: Expect::PaintsMore,
+            // The editor carries the same accessible name as the pencil, so
+            // this is the pair "Rename e" resolves to: a button that always
+            // paints and a textbox that only paints while editing. `Paints`
+            // needs one match with a box, and the button alone satisfies it -
+            // which is why the subject is the *role*, scoped by name is not
+            // possible here. See the count-based note below.
+            subject: "textbox:Rename e",
+            expect: Expect::PaintsNamed,
+            panel_only: false,
+        },
+        /*
+         * The project header's pencil, which is a different mount from the
+         * Home rows even though it is the same component.
+         *
+         * Both were on the dead list. Both work: measured on a fresh instance,
+         * the header's editor opens at 650x23 and the count of painted
+         * textboxes goes 5 -> 6.
+         */
+        Check {
+            id: "rename-project-header",
+            group: "rename",
+            what: "the project header's pencil opens its editor",
+            // Only exists once a project is open. Double click is the gesture
+            // Home uses to open a row, but a single press folds it, so this
+            // presses the row's own name control instead.
+            // Reached by pressing a Home row's name, which opens the project.
+            // Depending on the previous check having left the surface open
+            // would make this pass or fail on run order rather than on the
+            // control.
+            open: Some("eno working directory"),
+            hover: None,
+            click: Some("Rename project"),
+            press: true,
+            // The editor carries the same accessible name as the pencil, so
+            // this is the pair "Rename e" resolves to: a button that always
+            // paints and a textbox that only paints while editing. `Paints`
+            // needs one match with a box, and the button alone satisfies it -
+            // which is why the subject is the *role*, scoped by name is not
+            // possible here. See the count-based note below.
+            subject: "textbox:Rename project",
+            expect: Expect::PaintsNamed,
             panel_only: false,
         },
     ]
 }
-

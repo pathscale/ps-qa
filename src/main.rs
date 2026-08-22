@@ -1325,6 +1325,24 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
 
     for check in selected {
+        /*
+         * Navigate first, and snapshot *after*, or the baseline is the wrong
+         * surface entirely and every count is measured against a screen the
+         * check is not about.
+         *
+         * A failure here is the check's own setup failing, reported as such:
+         * "could not open" rather than a verdict about the control, which is a
+         * distinction that cost a round of chasing a control that was simply
+         * on another surface.
+         */
+        let mut open_error = None;
+        if let Some(want) = check.open {
+            if let Err(error) = press_named(client, want).await {
+                open_error = Some(format!("could not open {want:?}: {error}"));
+            }
+            settle(client).await?;
+        }
+
         let (before, _) = inspect(client).await?;
 
         // Hover first: the row actions do not exist until `pointerenter`.
@@ -1372,11 +1390,11 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
              * being driven is how a working control reads as broken, so this
              * is the slow case for everything.
              */
-            tokio::time::sleep(Duration::from_millis(1200)).await;
+            settle(client).await?;
         }
 
         let (after, _) = inspect(client).await?;
-        let outcome = match click_error {
+        let outcome = match open_error.or(click_error) {
             Some(error) => Err(error),
             None => qa::verdict(check, &before.nodes, &after.nodes),
         };
@@ -1407,6 +1425,40 @@ async fn click_by_id(client: &mut Client, node_id: u64) -> Result<()> {
         .await?;
     if let DebugResponse::Error(error) = answer.response {
         bail!("{} ({})", error.message, error.code);
+    }
+    Ok(())
+}
+
+/// Wait until the tree stops changing, rather than guessing how long to sleep.
+///
+/// A fixed settle is wrong in both directions: too short and a working control
+/// reads as dead because its result had not painted when the snapshot was
+/// taken, too long and every check pays for the slowest one. The rename editor
+/// was still failing at 1200ms while the state *after* the run showed it open,
+/// which is the failure this removes.
+///
+/// Two consecutive identical reads, because one is not enough: an action that
+/// clears before it fills reports a stable tree in the gap between.
+async fn settle(client: &mut Client) -> Result<()> {
+    let mut last = 0usize;
+    let mut stable = 0;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (snapshot, _) = inspect(client).await?;
+        let now = snapshot
+            .nodes
+            .iter()
+            .filter(|n| n.visible && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
+            .count();
+        if now == last {
+            stable += 1;
+            if stable == 2 {
+                return Ok(());
+            }
+        } else {
+            stable = 0;
+            last = now;
+        }
     }
     Ok(())
 }

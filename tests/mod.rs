@@ -14,12 +14,14 @@
 //! | [`tasklog`] | `tasklog` | per-row controls and paging |
 //! | [`rename`] | `rename` | the in-place editor opens |
 //! | [`dialog`] | `dialog` | a dialog opens *and* can be dismissed |
+//! | [`delete`] | `delete` | a destructive control asks before it destroys |
 //!
 //! Order matters: they run top to bottom against one instance, so a later
 //! check inherits whatever an earlier one left on screen.
 
 use crate::qa::Check;
 
+pub mod delete;
 pub mod dialog;
 pub mod hover;
 pub mod icons;
@@ -38,5 +40,6 @@ pub fn all() -> Vec<Check> {
     checks.extend(tasklog::checks());
     checks.extend(rename::checks());
     checks.extend(dialog::checks());
+    checks.extend(delete::checks());
     checks
 }
