@@ -16,7 +16,7 @@ publish = true
 # `tauri-runtime-blitz` for the same types would build a browser engine to send
 # a wheel event. `cargo tree -p ps-qa` is the check.
 [dependencies]
-blitz-control-protocol = "^0.1.0"
+blitz-control-protocol = "^0.1.1"
 # The same framing the server uses, from the same crate, for the same reason as
 # the protocol types: a hand-rolled length-prefix reader is how the Python
 # client hung on its first malformed frame.
@@ -38,12 +38,3 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }
 name = "ps-qa"
 path = "src/main.rs"
 
-
-# The protocol crate, from the working checkout rather than the published pin.
-#
-# `CaptureRequest` and `CapturedImage` exist in `tauri-runtime-blitz` and not
-# yet in the crates.io release, so a build against the pin fails to resolve
-# them. AgencyZero carries the same patch for the same reason. Once the
-# protocol crate publishes a version with capture, this block goes away.
-[patch.crates-io]
-blitz-control-protocol = { path = "/Users/revenge/code/tauri-runtime-blitz/crates/blitz-control-protocol" }
