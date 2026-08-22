@@ -1340,7 +1340,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
             if let Err(error) = press_named(client, want).await {
                 open_error = Some(format!("could not open {want:?}: {error}"));
             }
-            settle(client).await?;
+            settle(client, None).await?;
         }
 
         let (before, _) = inspect(client).await?;
@@ -1390,7 +1390,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
              * being driven is how a working control reads as broken, so this
              * is the slow case for everything.
              */
-            settle(client).await?;
+            settle(client, Some(check.subject)).await?;
         }
 
         let (after, _) = inspect(client).await?;
@@ -1439,7 +1439,32 @@ async fn click_by_id(client: &mut Client, node_id: u64) -> Result<()> {
 ///
 /// Two consecutive identical reads, because one is not enough: an action that
 /// clears before it fills reports a stable tree in the gap between.
-async fn settle(client: &mut Client) -> Result<()> {
+async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
+    /*
+     * Wait for the *subject* where there is one, not for the tree.
+     *
+     * A whole-tree count is stable while a single node is mid-open, so it
+     * returned early and the check read a screen the action had not reached
+     * yet: measured immediately after a failing run, the rename editor was
+     * painting at 650x23 while the check had just reported it absent.
+     */
+    if let Some(subject) = want {
+        let (role, name) = subject.split_once(':').unwrap_or(("", subject));
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let (snapshot, _) = inspect(client).await?;
+            let painted = snapshot.nodes.iter().any(|n| {
+                (role.is_empty() || n.role == role)
+                    && n.name.contains(name)
+                    && n.visible
+                    && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+            });
+            if painted {
+                return Ok(());
+            }
+        }
+        return Ok(());
+    }
     let mut last = 0usize;
     let mut stable = 0;
     for _ in 0..40 {

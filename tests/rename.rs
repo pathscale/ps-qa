@@ -1,5 +1,17 @@
 //! The in-place rename editor opens when its pencil is pressed.
 //!
+//! # Both of these currently fail, and the app is why
+//!
+//! Measured against a running build: pressing the pencil lays the editor out
+//! at its full size - `651x24` for the project header - and leaves it `HIDDEN`.
+//! The `Swapped` wrapper above it is `0x0 HIDDEN`, still carrying the `hidden`
+//! class, while its own child laid out at `671x46`.
+//!
+//! So the signal write lands and the render never follows it. `start()` runs,
+//! the layout happens, and the node the owner would type into is never made
+//! visible. A check that asked only "is there a box" would pass on this, which
+//! is why the assertion is `PaintsNamed` - role, name, *and* visibility.
+//!
 //! This shipped dead on 31 surfaces with a green unit suite either side of it,
 //! and the failure is invisible to a DOM-only environment: the row around the
 //! pencil is a `role="button"` that folds on `click`, the framework delegates
