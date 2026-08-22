@@ -9,6 +9,10 @@ homepage = "https://github.com/pathscale/ps-qa"
 keywords = ["qa", "testing", "blitz", "mcp", "ui"]
 categories = ["development-tools::testing"]
 publish = true
+# `tests/` holds the check definitions, compiled into the binary via a `#[path]`
+# module, not integration tests. Without this cargo also builds each file as its
+# own test target, where `crate::qa` does not exist.
+autotests = false
 
 # Nothing here may pull in tauri, winit, wgpu or blitz. The protocol types come
 # from `blitz-control-protocol` precisely so this binary can speak the wire

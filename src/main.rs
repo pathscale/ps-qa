@@ -29,6 +29,11 @@ mod qa;
 mod reach;
 mod report;
 mod sweep;
+// The checks live in `tests/`, one file per group. `#[path]` because cargo
+// reserves a bare top-level `tests/` for integration tests, and these are data
+// compiled into the binary rather than a separate test target.
+#[path = "../tests/mod.rs"]
+mod tests;
 
 use inspector::Client;
 
