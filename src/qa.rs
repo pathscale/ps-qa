@@ -119,12 +119,39 @@ pub struct Check {
     pub panel_only: bool,
 }
 
-/// The panel's controls, one entry per thing that can regress.
+/// Every check, in the order they run.
 ///
-/// Ordered so that a failure reads top-down: structure first, then the controls
-/// that depend on it. A control that needs hover names the row to hover, which
-/// is the step that a test written against jsdom silently skips.
+/// One function per group, so a group is a place rather than a stretch of a
+/// long list: a new check has an obvious home, and a failing group can be read
+/// on its own without scrolling past the other six. `ps-qa list` prints this
+/// same set, and `ps-qa qa <group>` or `<id>` runs a slice of it.
+///
+/// | group | what it covers |
+/// | --- | --- |
+/// | `icons` | artwork resolves to a box on screen |
+/// | `hover` | row controls that only exist while hovered |
+/// | `status` | the status marker does not destroy its row |
+/// | `sections` | collapse and expand round-trip |
+/// | `tasklog` | per-row controls and paging |
+/// | `rename` | the in-place editor opens |
+/// | `dialog` | a dialog opens *and* can be dismissed |
+///
+/// Ordered so a failure reads top-down: structure first, then the controls that
+/// depend on it.
 pub fn checks() -> Vec<Check> {
+    let mut all = Vec::new();
+    all.extend(icons());
+    all.extend(hover());
+    all.extend(status());
+    all.extend(sections());
+    all.extend(tasklog());
+    all.extend(rename());
+    all.extend(dialog());
+    all
+}
+
+/// Icons resolve to artwork, not just to a box.
+fn icons() -> Vec<Check> {
     vec![
         // ---- icons -----------------------------------------------------
         //
@@ -147,19 +174,22 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: false,
         },
-        // ---- hover-revealed row controls -------------------------------
-        //
-        // These do not exist until the pointer is on the row. A check that
-        // forgets the hover reports "no such node" and reads as a missing
-        // feature rather than a test driving the app wrongly.
-        //
-        // The row to hover has to be a *panel* row. Home renders the same
-        // control names and its rows carry no reorder arrows, so hovering
-        // whichever row matched first put the pointer on Home and reported the
-        // panel's arrows as broken when they were never asked to appear. That
-        // mistake cost a round of chasing a bug that did not exist, which is
-        // why [`hover_panel_row`] targets a point inside the column instead of
-        // a name that both lists answer to.
+    ]
+}
+
+/// Controls that do not exist until the pointer is on their row.
+///
+/// A check that forgets the hover reports "no such node" and reads as a missing
+/// feature rather than a test driving the app wrongly.
+///
+/// The row to hover has to be a *panel* row. Home renders the same control
+/// names and its rows carry no reorder arrows, so hovering whichever row
+/// matched first put the pointer on Home and reported the panel's arrows as
+/// broken when they were never asked to appear. That mistake cost a round of
+/// chasing a bug that did not exist, which is why the runner targets a point
+/// inside the column instead of a name that both lists answer to.
+fn hover() -> Vec<Check> {
+    vec![
         Check {
             id: "hover-1",
             group: "hover",
@@ -193,11 +223,16 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: true,
         },
-        // ---- the status marker -----------------------------------------
-        //
-        // The reported symptom was "one click appears to delete items". The
-        // cycle deliberately avoids the terminal states for exactly that
-        // reason, so what this pins is that a click does not remove the row.
+    ]
+}
+
+/// The status marker cycles a row without destroying it.
+///
+/// The reported symptom was "one click appears to delete items". The cycle
+/// deliberately avoids the terminal states for exactly that reason, so what
+/// this pins is that a click does not remove the row.
+fn status() -> Vec<Check> {
+    vec![
         /*
          * Counted over the item rows themselves, not the marker's own label.
          *
@@ -233,7 +268,16 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: true,
         },
-        // ---- the panel's sections --------------------------------------
+    ]
+}
+
+/// Section headers are present, and collapse/expand round-trips.
+///
+/// A disclosure that swaps its own label is the strongest cheap signal there
+/// is: `Collapse X` must become `Expand X` and back, which is visible in the
+/// tree without knowing anything about what was disclosed.
+fn sections() -> Vec<Check> {
+    vec![
         Check {
             id: "sections-1",
             group: "sections",
@@ -289,7 +333,15 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: true,
         },
-        // ---- the task log ----------------------------------------------
+    ]
+}
+
+/// The task log renders its per-row controls and can page backwards.
+///
+/// Both regressed once with the unit suite green: the log rendered upside down,
+/// and it could not page past its first fetch.
+fn tasklog() -> Vec<Check> {
+    vec![
         Check {
             id: "tasklog-1",
             group: "tasklog",
@@ -312,20 +364,18 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: true,
         },
-        /*
-         * ---- the two controls that shipped dead ------------------------
-         *
-         * Both were dead in the running app for weeks with a green unit
-         * suite either side of them, and neither failure is visible to
-         * jsdom: one is a hit-testing fault and the other is an event-order
-         * fault, and jsdom has no hit-testing and no competing handler.
-         * These are the checks that would have caught them.
-         *
-         * `Paints` is the assertion that matters here rather than presence.
-         * Both bugs left the node in the tree with a correct name and a
-         * `0x0` box, which is precisely the state a presence check passes
-         * and a person cannot use.
-         */
+    ]
+}
+
+/// The in-place rename editor opens when its pencil is pressed.
+///
+/// This shipped dead on 31 surfaces with a green unit suite either side of it,
+/// and the failure is invisible to a DOM-only environment: the row around the
+/// pencil is a `role="button"` that folds on `click`, the framework delegates
+/// `click`, and the pencil's `stopPropagation` lost that race. jsdom has no
+/// competing handler, so it never saw the conflict.
+fn rename() -> Vec<Check> {
+    vec![
         Check {
             id: "rename-opens-editor",
             group: "rename",
@@ -370,15 +420,19 @@ pub fn checks() -> Vec<Check> {
             expect: Expect::PaintsMore,
             panel_only: false,
         },
-        /*
-         * Two halves, in order: the dialog opens, then its Cancel closes it.
-         *
-         * The checks run in sequence against one instance, so the second
-         * inherits the dialog the first opened. Splitting them this way is
-         * what makes a failure legible - "it never opened" and "it opened
-         * and would not close" are different bugs, and the trap was the
-         * second one.
-         */
+    ]
+}
+
+/// A dialog opens *and* can be dismissed.
+///
+/// Two halves, in order, and the order matters: the checks run in sequence
+/// against one instance, so the second inherits the dialog the first opened.
+/// Splitting them is what makes a failure legible - "it never opened" and "it
+/// opened and would not close" are different bugs, and the one that shipped
+/// was the second. It trapped the window and put 68 of that surface's 84
+/// controls out of reach behind one dialog.
+fn dialog() -> Vec<Check> {
+    vec![
         Check {
             id: "dialog-opens",
             group: "dialog",
