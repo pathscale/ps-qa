@@ -3,7 +3,12 @@ name = "ps-qa"
 description = "Drive a running Blitz app through its MCP control socket and assert what the renderer did"
 version = "0.1.0"
 edition = "2024"
-publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pathscale/ps-qa"
+homepage = "https://github.com/pathscale/ps-qa"
+keywords = ["qa", "testing", "blitz", "mcp", "ui"]
+categories = ["development-tools::testing"]
+publish = true
 
 # Nothing here may pull in tauri, winit, wgpu or blitz. The protocol types come
 # from `blitz-control-protocol` precisely so this binary can speak the wire
