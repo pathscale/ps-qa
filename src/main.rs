@@ -1732,7 +1732,10 @@ fn measure_ink(image: &CapturedImage) -> Result<Ink> {
     }
 
     let mut histogram: HashMap<(u8, u8, u8), usize> = HashMap::new();
-    for pixel in rgba.chunks_exact(4) {
+    // `as_chunks::<4>()` rather than `chunks_exact(4)`: the width is a constant,
+    // so this hands back `[u8; 4]` and the indexing below is bounds-checked at
+    // compile time instead of per pixel.
+    for pixel in rgba.as_chunks::<4>().0 {
         *histogram.entry((pixel[0], pixel[1], pixel[2])).or_default() += 1;
     }
     let background = histogram
@@ -1747,7 +1750,9 @@ fn measure_ink(image: &CapturedImage) -> Result<Ink> {
     let background_luminance = luminance(background);
 
     let visible = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| {
             // Transparent pixels are not ink whatever their colour.
             if pixel[3] < 32 {

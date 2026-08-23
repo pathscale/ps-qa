@@ -34,8 +34,21 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      # `-D warnings` against whatever `stable` is today, which is deliberately
+      # stricter than a pinned version: a lint added upstream should surface
+      # here rather than the first time someone upgrades.
+      #
+      # The cost is that a local clippy on an older toolchain passes code this
+      # rejects. That happened on the run that introduced this file: local
+      # rustc 1.97.1 had no `chunks_exact_to_as_chunks` lint, 1.98.0 did, and
+      # the PR went red having been checked clean. If this step fails on
+      # something you cannot reproduce, compare `rustc --version` with the
+      # `Rust toolchain` step above before assuming the workflow is wrong.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: |
+          rustc --version
+          cargo clippy --version
+          cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --locked
