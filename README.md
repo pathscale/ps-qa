@@ -200,9 +200,11 @@ supply that, and both belong to the application under test:
 **`ps-qa.ron`** — what the harness cannot infer. The surfaces to sweep and the
 control that opens each, the permanent tabs, the collapsible section headers,
 the prefixes of controls that close or fold something, the region a transcript
-scrolls inside. Found by `--app`, or `ps-qa.ron` in the working directory. A
-profile that does not parse names the file, line and column rather than
-degrading to empty in silence.
+scrolls inside, the exact native/external controls reserved for a manual pass,
+terminal controls to defer until a surface is otherwise covered, and controls
+whose successful effect is outside the semantic tree. Found by `--app`, or
+`ps-qa.ron` in the working directory. A profile that does not parse names the
+file, line and column rather than degrading to empty in silence.
 
 **`tests/ps-qa/*.ron`** — the checks. A check is a precondition, an action and
 an assertion with no behaviour of its own, so it is data: editing a selector is

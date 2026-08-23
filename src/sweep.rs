@@ -60,8 +60,12 @@ pub struct Case {
 /// another thing to keep in step with the application, and the day it drifts is
 /// the day the sweep starts lying; the accessible name is already the contract
 /// and is already asserted by the accessibility layer.
-pub fn expectation_for(name: &str) -> Expectation {
+pub fn expectation_for(name: &str, explicitly_inert: bool) -> Expectation {
     let lower = name.to_lowercase();
+
+    if explicitly_inert {
+        return Expectation::Inert;
+    }
 
     /*
      * Disclosure pairs, which name their own inverse.
@@ -101,50 +105,6 @@ pub fn expectation_for(name: &str) -> Expectation {
         return Expectation::Inert;
     }
 
-    /*
-     * A re-fetch is allowed to find nothing new.
-     *
-     * `Refresh` and `Re-check` ask the backend for a status they already have.
-     * Both were reported dead for weeks on "nothing in the tree changed", and
-     * both are fine: driven against a running build, `Re-check` sends
-     * `list_agent_status` (417ms) and `Refresh` sends `get_agent_proxy_status`
-     * (2ms). Nothing moved because nothing had changed since the last fetch,
-     * which is the correct outcome, not a dead button.
-     *
-     * `Changes` cannot express that, so these are `Inert`: the weaker claim
-     * that pressing them does not corrupt the document. Catching a re-fetch
-     * that silently fails needs the backend call itself asserted, which this
-     * harness reads no channel for.
-     */
-    if lower == "refresh" || lower == "re-check" || lower == "recheck" {
-        return Expectation::Inert;
-    }
-
-    /*
-     * A toggle whose only output is `aria-pressed` and a colour.
-     *
-     * `Extra Thinking` was on the failure list for weeks and works: driven
-     * against a running build its button goes `bg=#353a3f38 fg=#dbac9fff` ->
-     * `bg=#00000000 fg=#aaafb3ff` and back, one press each way. Nothing in the
-     * tree moves because the state lives in `aria-pressed` and a class, and
-     * the fingerprint deliberately carries neither - it is role, name, enabled
-     * and visible, because geometry and styling move for reasons the
-     * application did not cause.
-     *
-     * `SemanticNode::selected` is the field this belongs in, but the runtime
-     * fills it from `aria-selected` only (`runtime.rs:722`), so a pressed
-     * toggle is genuinely invisible here. Until `aria-pressed` is mapped
-     * there, asserting a change would report a working control as dead, which
-     * is the failure this whole audit exists to stop. `Inert` at least pins
-     * that it does not wreck the composer.
-     *
-     * Verify these by paint, not by tree:
-     *     ps-qa paint "<name>" 1
-     */
-    if lower.starts_with("extra thinking") {
-        return Expectation::Inert;
-    }
-
     Expectation::Changes
 }
 
@@ -157,6 +117,7 @@ pub fn cases(
     nodes: &[SemanticNode],
     family: Option<&str>,
     family_of: impl Fn(&str) -> &'static str,
+    is_inert: impl Fn(&str) -> bool,
 ) -> Vec<Case> {
     nodes
         .iter()
@@ -169,7 +130,7 @@ pub fn cases(
                 id: node.id,
                 name: node.name.clone(),
                 family: family_name,
-                expect: expectation_for(&node.name),
+                expect: expectation_for(&node.name, is_inert(&node.name)),
             }
         })
         .filter(|case| family.is_none_or(|want| case.family == want))
@@ -361,7 +322,7 @@ mod tests {
             id: 1,
             name: "Delete thing".to_owned(),
             family: "delete",
-            expect: expectation_for("Delete thing"),
+            expect: expectation_for("Delete thing", false),
         };
         let before = vec![button("Delete thing"), button("Rename thing")];
         let after = vec![
@@ -384,7 +345,7 @@ mod tests {
             id: 1,
             name: "Rename thing".to_owned(),
             family: "edit",
-            expect: expectation_for("Rename thing"),
+            expect: expectation_for("Rename thing", false),
         };
         let mut field = button("Project name");
         field.role = "textbox".to_owned();
@@ -406,26 +367,22 @@ mod tests {
             id: 1,
             name: "Delete thing".to_owned(),
             family: "delete",
-            expect: expectation_for("Delete thing"),
+            expect: expectation_for("Delete thing", false),
         };
         let before = vec![button("Delete thing"), button("Rename thing")];
         assert!(judge(&case, &before, &before).is_some());
     }
 
     #[test]
-    fn a_refetch_that_finds_nothing_new_is_not_a_dead_button() {
-        // Both were reported dead for weeks on "nothing in the tree changed",
-        // and both are fine: driven against a running build, `Re-check` sends
-        // `list_agent_status` and `Refresh` sends `get_agent_proxy_status`.
-        // Nothing moved because nothing had changed since the last fetch.
-        for name in ["Refresh", "Re-check"] {
+    fn an_explicitly_inert_control_may_leave_the_tree_unchanged() {
+        for name in ["Synchronize", "Check remote state"] {
             let case = Case {
                 id: 1,
                 name: name.to_owned(),
                 family: "other",
-                expect: expectation_for(name),
+                expect: expectation_for(name, true),
             };
-            let tree = vec![button(name), button("Default agent")];
+            let tree = vec![button(name), button("Neighbour")];
             assert!(
                 judge(&case, &tree, &tree).is_none(),
                 "{name} should be allowed to leave the tree alone"
@@ -434,33 +391,30 @@ mod tests {
     }
 
     #[test]
-    fn a_toggle_that_only_moves_a_colour_is_not_a_dead_button() {
-        // `Extra Thinking` keeps its state in `aria-pressed` and a class, and
-        // the fingerprint carries neither. Measured working by paint:
-        // bg=#353a3f38 -> bg=#00000000 and back, one press each way.
-        let name = "Extra Thinking: let the model reason before it answers.";
+    fn an_explicitly_inert_paint_toggle_is_not_called_dead() {
+        let name = "Appearance toggle";
         let case = Case {
             id: 1,
             name: name.to_owned(),
             family: "other",
-            expect: expectation_for(name),
+            expect: expectation_for(name, true),
         };
-        let tree = vec![button(name), button("Model")];
+        let tree = vec![button(name), button("Neighbour")];
         assert!(judge(&case, &tree, &tree).is_none());
     }
 
     #[test]
-    fn a_refresh_that_wrecks_the_document_still_fails() {
+    fn an_inert_control_that_wrecks_the_document_still_fails() {
         // `Inert` is a weaker claim than `Changes`, not no claim at all: the
         // re-fetch may find nothing, but it may not tear down the surface.
         let case = Case {
             id: 1,
-            name: "Refresh".to_owned(),
+            name: "Synchronize".to_owned(),
             family: "other",
-            expect: expectation_for("Refresh"),
+            expect: expectation_for("Synchronize", true),
         };
-        let before = vec![button("Refresh"), button("Default agent")];
-        let after = vec![button("Refresh")];
+        let before = vec![button("Synchronize"), button("Neighbour")];
+        let after = vec![button("Synchronize")];
         assert!(judge(&case, &before, &after).is_some());
     }
 }

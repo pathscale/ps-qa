@@ -2398,7 +2398,12 @@ async fn run_sweep(client: &mut Client, family: Option<&str>) -> Result<usize> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap_or((0.0, f64::MAX));
-    let planned = sweep::cases(&snapshot.nodes, family, audit::family_of);
+    let planned = sweep::cases(
+        &snapshot.nodes,
+        family,
+        audit::family_of,
+        reach::is_inert_control,
+    );
     if planned.is_empty() {
         bail!("no clickable buttons matched {family:?}");
     }
@@ -2970,7 +2975,7 @@ async fn sweep_modal(
             id,
             name: name.clone(),
             family: audit::family_of(&name),
-            expect: sweep::expectation_for(&name),
+            expect: sweep::expectation_for(&name, reach::is_inert_control(&name)),
         };
         if let Some(why) = sweep::judge(&case, &before.nodes, &after.nodes) {
             failures.push((
@@ -3188,10 +3193,6 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 // screen and cannot be dismissed from here.
                 here.manual += 1;
                 skipped_manual.push(node.name.clone());
-            } else if reach::restarts_the_app(&node.name) {
-                // Opens a setup flow that swallows navigation for the rest of
-                // the run; counted, never pressed.
-                here.manual += 1;
             } else if reach::closes_a_surface(&node.name) {
                 /*
                  * Swept, but after everything that stands on the tab it
@@ -3315,7 +3316,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 id,
                 name: name.clone(),
                 family: audit::family_of(&name),
-                expect: sweep::expectation_for(&name),
+                expect: sweep::expectation_for(&name, reach::is_inert_control(&name)),
             };
             if click_by_id(client, id).await.is_err() {
                 here.vanished += 1;
@@ -3341,23 +3342,6 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
              * from a restart rather than grinding on against a window nobody
              * can use.
              */
-            /*
-             * A native chooser is invisible to the tree, so it is detected by
-             * the window going unresponsive and cleared with Escape.
-             *
-             * Pressing `Attach files` puts a macOS panel over the app that no
-             * click from here can reach and that the semantic tree cannot see -
-             * a user watched one sit on their screen mid-run, twice. The
-             * exclusion list that used to prevent this is gone on purpose
-             * (everything gets tested), so the harness recovers instead: if the
-             * tree stops answering or stops changing after a press, send the
-             * key a person would.
-             */
-            if reach::may_open_native_chooser(&name) {
-                let _ = press_key(client, "escape", 1, "").await;
-                tokio::time::sleep(Duration::from_millis(300)).await;
-            }
-
             let (after_click, _) = inspect(client).await?;
             if reach::modal_open(&after_click.nodes) {
                 let trapped =
@@ -4039,7 +4023,7 @@ mod tests {
             InventoryClass::Unreachable
         );
         assert_eq!(
-            inventory_class(&component("Refresh", true, true), false),
+            inventory_class(&component("Synchronize", true, true), false),
             InventoryClass::Reachable
         );
     }
