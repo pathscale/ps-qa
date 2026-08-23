@@ -69,7 +69,13 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
     let closes: Vec<String> = nodes
         .iter()
         .filter(|n| n.role == "button" && onscreen(n))
-        .filter_map(|n| n.name.strip_prefix("Close ").map(str::to_owned))
+        .filter_map(|n| {
+            profile()
+                .close_prefixes
+                .iter()
+                .find_map(|prefix| n.name.strip_prefix(prefix.as_str()))
+                .map(str::to_owned)
+        })
         .collect();
     /*
      * A project tab, which is any doubled label that is not one of the three
@@ -116,25 +122,42 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         nodes
             .iter()
             .filter(|n| n.role == "button" && onscreen(n))
-            .filter(|n| !n.name.starts_with("Close ") && !n.name.starts_with("Rename "))
+            .filter(|n| {
+                let skip = |prefixes: &Vec<String>| {
+                    prefixes.iter().any(|p| n.name.starts_with(p.as_str()))
+                };
+                !skip(&profile().close_prefixes) && !skip(&profile().row_action_prefixes)
+            })
     };
-    let populated = rows().find(|n| {
-        n.name
-            .split(" open · ")
-            .next()
-            .and_then(|head| head.rsplit(')').next())
-            .and_then(|count| count.trim().rsplit(' ').next())
-            .and_then(|count| count.parse::<u32>().ok())
-            .is_some_and(|open| open > 0)
+    /*
+     * Preferring a row whose summary carries a non-zero count.
+     *
+     * The first marker is treated as the one a count precedes, because a row
+     * with something in it opens a populated pane and an empty one opens four
+     * empty headers. If no marker parses a count this falls through to plain
+     * marker matching, which is the honest behaviour for an application whose
+     * rows carry no counts at all.
+     */
+    let markers = &profile().document_row_markers;
+    let populated = markers.first().and_then(|first| {
+        rows().find(|n| {
+            n.name
+                .split(first.as_str())
+                .next()
+                .and_then(|head| head.rsplit(')').next())
+                .and_then(|count| count.trim().rsplit(' ').next())
+                .and_then(|count| count.parse::<u32>().ok())
+                .is_some_and(|open| open > 0)
+        })
     });
     if let Some(row) = populated {
         return Some(row.name.clone());
     }
     rows()
         .find(|n| {
-            n.name.contains(" open · ")
-                || n.name.contains("no working directory")
-                || n.name.contains(" ago")
+            markers
+                .iter()
+                .any(|marker| n.name.contains(marker.as_str()))
         })
         .map(|n| n.name.clone())
 }
@@ -532,7 +555,10 @@ pub fn closes_a_surface(name: &str) -> bool {
      * The close controls are worth pressing; they are not worth pressing in the
      * middle of a plan that stands on what they remove.
      */
-    name.starts_with("Close ")
+    profile()
+        .close_prefixes
+        .iter()
+        .any(|prefix| name.starts_with(prefix.as_str()))
 }
 
 /// The subtree of the dialog that owns this dismiss control.
@@ -953,20 +979,34 @@ mod tests {
 
     #[test]
     fn surface_tabs_are_not_closed_out_from_under_the_sweep() {
-        assert!(closes_a_surface("Close Settings"));
-        assert!(closes_a_surface("Close Analytics"));
         /*
-         * A project tab's close counts too, which it did not used to.
+         * The prefixes come from the application, so this asserts the matching
+         * rule against a made-up vocabulary rather than one product's labels.
          *
-         * It is still pressed - the caller defers these to the end of the plan
-         * rather than skipping them - but closing any tab falls the window back
-         * to Home and retires a pane the rest of the plan stands on. Exempting
-         * project tabs is what left Home reporting zero buttons in a full run.
+         * A tab's close counts even for a document tab, which it did not used
+         * to. It is still pressed - the caller defers these to the end of the
+         * plan rather than skipping them - but closing any tab retires a pane
+         * the rest of the plan stands on. Exempting document tabs is what left
+         * the root surface reporting zero buttons in a full run.
          */
-        assert!(closes_a_surface("Close delta/east/cobalt"));
+        let profile = crate::app::AppProfile {
+            close_prefixes: vec!["Dismiss ".to_owned()],
+            ..Default::default()
+        };
+        let closes = |name: &str| {
+            profile
+                .close_prefixes
+                .iter()
+                .any(|prefix| name.starts_with(prefix.as_str()))
+        };
+        assert!(closes("Dismiss Preferences"));
+        assert!(closes("Dismiss some/document/name"));
         // Not a close at all.
-        assert!(!closes_a_surface("Collapse Recent"));
-        assert!(!closes_a_surface("Rename e"));
+        assert!(!closes("Collapse Recent"));
+        assert!(!closes("Rename thing"));
+        // And an application that names no close prefix has none.
+        let bare = crate::app::AppProfile::default();
+        assert!(bare.close_prefixes.is_empty());
     }
 
     #[test]
