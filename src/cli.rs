@@ -123,6 +123,54 @@ pub enum Command {
     /// The semantic tree.
     Tree,
 
+    /// Query the live tree: every control matching a role, a name pattern and a
+    /// state, as TOON.
+    ///
+    /// This is the one to reach for. `layout` answers "where is the node called
+    /// exactly this", which is why every real question ended up piped through
+    /// awk: "which buttons are off screen", "is anything painting at 0x0",
+    /// "what is on this surface at all". Those are filters, and they belong
+    /// here rather than in whatever the caller can assemble from a column
+    /// dump.
+    ///
+    /// Patterns are glob-style: `chat*` matches every name starting with
+    /// "chat", `*settings*` anywhere, and a bare word is a substring, which is
+    /// what a name is usually recalled as.
+    Find {
+        /// Name pattern. `chat*`, `*close*`, or a bare substring. Omit to match
+        /// every node.
+        #[arg(default_value = "*")]
+        pattern: String,
+        /// Only this role: button, textbox, menuitem, checkbox, heading, and so
+        /// on. Repeat to accept several.
+        #[arg(long)]
+        role: Vec<String>,
+        /// Only nodes the tree calls visible.
+        #[arg(long)]
+        visible: bool,
+        /// Only nodes the tree calls hidden. The pair that found the retained
+        /// panes.
+        #[arg(long)]
+        hidden: bool,
+        /// Only nodes with a non-zero box. A control at 0x0 is in the tree and
+        /// on nobody's screen, which is the distinction that cost the most time
+        /// to keep re-deriving.
+        #[arg(long)]
+        painted: bool,
+        /// Only nodes whose box lies outside the window, on either axis.
+        #[arg(long)]
+        offscreen: bool,
+        /// Only nodes that are disabled.
+        #[arg(long)]
+        disabled: bool,
+        /// Report how many matched, and nothing else.
+        #[arg(long)]
+        count: bool,
+        /// Stop after this many rows.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
     /// Live boxes: x, y, w, h per named node.
     Layout {
         /// Match nodes whose accessible name contains this.
