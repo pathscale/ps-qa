@@ -43,6 +43,14 @@ use blitz_control_protocol::SemanticNode;
 use std::collections::HashMap;
 
 /// What a single check asserts once its action has run.
+///
+/// The full vocabulary is kept whether or not a check currently uses every
+/// variant. These are the choices available when writing one, documented with
+/// the failure each is right for, and a variant deleted for being momentarily
+/// unused is a distinction the next person has to rediscover. `Grows` went
+/// unconstructed the moment `tasklog-2` was strengthened to `PaintsMore`; it is
+/// still the correct assertion for anything that mounts without painting.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum Expect {
     /// The named node exists, is visible, and has a non-zero box.
@@ -175,6 +183,10 @@ pub fn checks() -> Vec<Check> {
 /// therefore mixes two lists: "Edit " matched 107 nodes and "Copy this
 /// task-log entry" matched 880, most of them Home's, so a panel row appearing
 /// or leaving was lost in the noise. Anything left of this is not the panel.
+// `pub` in a binary crate, so the dead-code pass cannot see the two call sites
+// through the module boundary and reports it unused. It is used: `matching()`
+// below, and the panel resolution in `main.rs`.
+#[allow(dead_code)]
 pub const PANEL_LEFT: f64 = 900.0;
 
 fn matching<'a>(nodes: &'a [SemanticNode], want: &str, panel_only: bool) -> Vec<&'a SemanticNode> {
@@ -283,10 +295,7 @@ pub fn verdict(
             }
         }
         Expect::PaintsNamed => {
-            let (role, name) = check
-                .subject
-                .split_once(':')
-                .unwrap_or(("", check.subject));
+            let (role, name) = check.subject.split_once(':').unwrap_or(("", check.subject));
             let hit = after
                 .iter()
                 .filter(|node| node.role == role && node.name.contains(name))

@@ -237,9 +237,7 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
     let Some(marker) = surface_marker(surface) else {
         return true;
     };
-    nodes
-        .iter()
-        .any(|n| onscreen(n) && n.name.contains(marker))
+    nodes.iter().any(|n| onscreen(n) && n.name.contains(marker))
 }
 
 /// The controls that belong to the surface in front, by ancestry.
@@ -296,7 +294,10 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
      * whichever surface it belongs to, and it stops before the window root,
      * whose subtree is every surface at once.
      */
-    let onscreen_total = nodes.iter().filter(|n| n.role == "button" && onscreen(n)).count();
+    let onscreen_total = nodes
+        .iter()
+        .filter(|n| n.role == "button" && onscreen(n))
+        .count();
     /*
      * Descended from the root, not climbed from every node.
      *
@@ -445,16 +446,40 @@ pub struct Exception {
 /// Re-derive with `grep -n '\.dialog()' apps/gui/src/*.rs` - it is seven call
 /// sites, and if that number changes this list is stale.
 pub const NATIVE_CHOOSERS: &[Exception] = &[
-    Exception { label: "Attach files", command: "choose_attachments" },
-    Exception { label: "Add dir", command: "choose_project_directory" },
-    Exception { label: "Choose a working directory", command: "choose_project_directory" },
-    Exception { label: "Choose the agencyzero data directory", command: "(startup data dir)" },
-    Exception { label: "Select backup file", command: "select_store_backup" },
+    Exception {
+        label: "Attach files",
+        command: "choose_attachments",
+    },
+    Exception {
+        label: "Add dir",
+        command: "choose_project_directory",
+    },
+    Exception {
+        label: "Choose a working directory",
+        command: "choose_project_directory",
+    },
+    Exception {
+        label: "Choose the agencyzero data directory",
+        command: "(startup data dir)",
+    },
+    Exception {
+        label: "Select backup file",
+        command: "select_store_backup",
+    },
     // `Back up & close`, not the panel's own title: same mismatch as `Choose…`.
-    Exception { label: "Back up & close", command: "create_store_backup" },
-    Exception { label: "Export", command: "export_study_events" },
+    Exception {
+        label: "Back up & close",
+        command: "create_store_backup",
+    },
+    Exception {
+        label: "Export",
+        command: "export_study_events",
+    },
     // `Restore` raises the restore picker; the old entry named the panel.
-    Exception { label: "Restore", command: "select_store_backup" },
+    Exception {
+        label: "Restore",
+        command: "select_store_backup",
+    },
     /*
      * The button reads `Choose…`, not anything about a proxy.
      *
@@ -470,7 +495,10 @@ pub const NATIVE_CHOOSERS: &[Exception] = &[
      * control's accessible name in a running build. Counting `.dialog()` call
      * sites proves the list is the right length, not that any of it matches.
      */
-    Exception { label: "Choose…", command: "choose_agent_proxy_binary" },
+    Exception {
+        label: "Choose…",
+        command: "choose_agent_proxy_binary",
+    },
 ];
 
 /// Whether the window is showing a modal that has to be dismissed to continue.
@@ -481,9 +509,7 @@ pub const NATIVE_CHOOSERS: &[Exception] = &[
 /// this button act" but "can I still get out of here".
 pub fn modal_open(nodes: &[SemanticNode]) -> bool {
     nodes.iter().any(|node| {
-        onscreen(node)
-            && node.role == "button"
-            && (node.name == "Cancel" || node.name == "Dismiss")
+        onscreen(node) && node.role == "button" && (node.name == "Cancel" || node.name == "Dismiss")
     })
 }
 
@@ -824,7 +850,12 @@ mod tests {
         let nodes = vec![
             node(1, "button", "Expand Items", Some([0.0, 0.0, 20.0, 20.0])),
             node(2, "button", "Expand Hidden", Some([0.0; 4])),
-            node(3, "button", "Collapse Running", Some([0.0, 0.0, 20.0, 20.0])),
+            node(
+                3,
+                "button",
+                "Collapse Running",
+                Some([0.0, 0.0, 20.0, 20.0]),
+            ),
         ];
         let found = expanders(&nodes);
         assert_eq!(found.len(), 1);
@@ -942,9 +973,24 @@ mod tests {
         // The first run moved the pointer to y=-9726 eight times over. A row
         // above the window reveals nothing and costs a round trip.
         let nodes = vec![
-            node(1, "listitem", "visible row", Some([10.0, 100.0, 200.0, 40.0])),
-            node(2, "listitem", "scrolled off", Some([10.0, -9726.0, 200.0, 40.0])),
-            node(3, "listitem", "below the fold", Some([10.0, 5000.0, 200.0, 40.0])),
+            node(
+                1,
+                "listitem",
+                "visible row",
+                Some([10.0, 100.0, 200.0, 40.0]),
+            ),
+            node(
+                2,
+                "listitem",
+                "scrolled off",
+                Some([10.0, -9726.0, 200.0, 40.0]),
+            ),
+            node(
+                3,
+                "listitem",
+                "below the fold",
+                Some([10.0, 5000.0, 200.0, 40.0]),
+            ),
         ];
         let points = hover_points(&nodes, "listitem", (0.0, 900.0));
         assert_eq!(points.len(), 1);

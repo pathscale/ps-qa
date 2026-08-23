@@ -284,7 +284,10 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
             if controls(before) == controls(after) {
                 None
             } else {
-                Some("a control appeared, vanished or changed state; this should only copy".to_owned())
+                Some(
+                    "a control appeared, vanished or changed state; this should only copy"
+                        .to_owned(),
+                )
             }
         }
     }
@@ -362,11 +365,7 @@ mod tests {
             expect: expectation_for("Delete e"),
         };
         let before = vec![button("Delete e"), button("Rename e")];
-        let after = vec![
-            button("Delete e"),
-            button("Rename e"),
-            button("Cancel"),
-        ];
+        let after = vec![button("Delete e"), button("Rename e"), button("Cancel")];
         assert_eq!(judge(&case, &before, &after), None);
     }
 

@@ -45,10 +45,18 @@ pub fn checks() -> Vec<Check> {
             hover: None,
             click: Some("Show 20 earlier"),
             subject: "Copy this task-log entry",
-            expect: Expect::Grows,
+            /*
+             * `PaintsMore`, not `Grows`.
+             *
+             * `Grows` counts tree membership, so a page of rows that mounted
+             * and then laid out at `0x0` satisfies it: the log would look
+             * paged and show the owner nothing. Counting only nodes that
+             * paint asks the question the control is for. Measured both ways
+             * on a working build; this is the stronger one that still passes.
+             */
+            expect: Expect::PaintsMore,
             press: false,
             panel_only: true,
         },
     ]
 }
-

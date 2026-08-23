@@ -1330,7 +1330,10 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
             .map(|check| format!("{} ({})", check.id, check.group))
             .collect();
         names.sort();
-        bail!("no check or group matching {group:?}. known:\n  {}", names.join("\n  "));
+        bail!(
+            "no check or group matching {group:?}. known:\n  {}",
+            names.join("\n  ")
+        );
     }
 
     println!(
@@ -1376,8 +1379,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
             let want_here = check.click.unwrap_or(check.subject);
             let (here, _) = inspect(client).await?;
             let arrived = here.nodes.iter().any(|n| {
-                n.name.contains(want_here)
-                    && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
             });
             if !arrived {
                 /*
@@ -1403,8 +1405,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
                 settle(client, None).await?;
                 let (now, _) = inspect(client).await?;
                 let there = now.nodes.iter().any(|n| {
-                    n.name.contains(want_here)
-                        && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                    n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
                 });
                 if !there && open_named(client, want).await.is_err() {
                     let _ = press_named(client, "Home").await;
@@ -1624,7 +1625,10 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
     let b = node.bounds.unwrap();
     let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
     if std::env::var_os("QA_TRACE").is_some() {
-        println!("        pressing {:?} (id {}) at {x:.0},{y:.0}", node.name, node.id);
+        println!(
+            "        pressing {:?} (id {}) at {x:.0},{y:.0}",
+            node.name, node.id
+        );
     }
     // Move first: hover state gates some controls, and a press at a point the
     // document never saw hovered is not what a mouse does.
@@ -2083,8 +2087,9 @@ async fn expand_everything(client: &mut Client, surface: &reach::Surface) -> Res
         let (tree, _) = inspect(client).await?;
         // This surface's disclosures only: a retained pane keeps its own, and
         // pressing one of those navigates out of the surface being planned.
-        let mine: std::collections::HashSet<u64> =
-            reach::on_surface_subtree(&tree.nodes, surface).into_iter().collect();
+        let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
+            .into_iter()
+            .collect();
         let todo: Vec<(u64, String)> = reach::expanders(&tree.nodes)
             .into_iter()
             .filter(|(id, _)| mine.contains(id))
@@ -2344,7 +2349,11 @@ async fn sweep_modal(
             expect: sweep::expectation_for(&name),
         };
         if let Some(why) = sweep::judge(&case, &before.nodes, &after.nodes) {
-            failures.push((surface.to_owned(), format!("{name} (in {opener} dialog)"), why));
+            failures.push((
+                surface.to_owned(),
+                format!("{name} (in {opener} dialog)"),
+                why,
+            ));
         }
         // A control inside the dialog may itself have closed it.
         let (now, _) = inspect(client).await?;
@@ -2474,8 +2483,9 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
          * surface's name while the panel's own controls were crowded out of the
          * plan - and the side panels are where the owner reports most problems.
          */
-        let mine: std::collections::HashSet<u64> =
-            reach::on_surface_subtree(&tree.nodes, surface).into_iter().collect();
+        let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
+            .into_iter()
+            .collect();
         let buttons: Vec<&blitz_control_protocol::SemanticNode> = tree
             .nodes
             .iter()
@@ -2721,8 +2731,8 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
 
             let (after_click, _) = inspect(client).await?;
             if reach::modal_open(&after_click.nodes) {
-                let trapped = sweep_modal(client, &name, &mut here, &mut failures, surface.name)
-                    .await?;
+                let trapped =
+                    sweep_modal(client, &name, &mut here, &mut failures, surface.name).await?;
                 if trapped {
                     /*
                      * Everything still in the plan is unreachable behind the
@@ -2806,7 +2816,10 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
     } else {
         println!("\n{} did not act:\n", failures.len());
         for (surface, name, why) in &failures {
-            println!("  [{surface}] {:<40} {why}", name.chars().take(40).collect::<String>());
+            println!(
+                "  [{surface}] {:<40} {why}",
+                name.chars().take(40).collect::<String>()
+            );
         }
     }
     Ok(failures.len())
