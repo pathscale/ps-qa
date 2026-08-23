@@ -18,7 +18,7 @@ pub fn checks() -> Vec<Check> {
             what: "deleting a project asks before it removes anything",
             open: Some("Home"),
             hover: None,
-            click: Some("Delete e"),
+            click: Some("Delete e756"),
             press: true,
             // The confirmation appears *in* the row, so the row's own name
             // grows the prompt. Absence of that is a delete that fired.

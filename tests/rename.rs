@@ -45,7 +45,7 @@ pub fn checks() -> Vec<Check> {
             // synthesised `click` therefore does nothing at all. Measured
             // before the fix: the row folded (+30 nodes) and the textbox
             // stayed `0x0`. After: `0x0 HIDDEN` -> `300x21`.
-            click: Some("Rename e"),
+            click: Some("Rename e756"),
             press: true,
             /*
              * `Grows`, counting textboxes that are actually on screen.
@@ -76,12 +76,12 @@ pub fn checks() -> Vec<Check> {
              * exactly this reason.
              */
             // The editor carries the same accessible name as the pencil, so
-            // this is the pair "Rename e" resolves to: a button that always
+            // this is the pair "Rename e756" resolves to: a button that always
             // paints and a textbox that only paints while editing. `Paints`
             // needs one match with a box, and the button alone satisfies it -
             // which is why the subject is the *role*, scoped by name is not
             // possible here. See the count-based note below.
-            subject: "textbox:Rename e",
+            subject: "textbox:Rename e756",
             expect: Expect::PaintsNamed,
             panel_only: false,
         },
@@ -104,12 +104,12 @@ pub fn checks() -> Vec<Check> {
             // Depending on the previous check having left the surface open
             // would make this pass or fail on run order rather than on the
             // control.
-            open: Some("alpha sigma omega west"),
+            open: Some("theta theta north indi"),
             hover: None,
             click: Some("Rename project"),
             press: true,
             // The editor carries the same accessible name as the pencil, so
-            // this is the pair "Rename e" resolves to: a button that always
+            // this is the pair "Rename e756" resolves to: a button that always
             // paints and a textbox that only paints while editing. `Paints`
             // needs one match with a box, and the button alone satisfies it -
             // which is why the subject is the *role*, scoped by name is not

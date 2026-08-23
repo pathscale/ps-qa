@@ -2313,7 +2313,10 @@ async fn sweep_modal(
         if click_by_id(client, id).await.is_err() {
             continue;
         }
-        here.swept += 1;
+        // `revealed`, not `swept`: this control did not exist when the surface's
+        // buttons were counted, so charging it to `swept` pushes the buckets
+        // past the total and turns the consistency check negative.
+        here.revealed += 1;
         if std::env::var_os("SWEEP_TRACE").is_some() {
             println!("      [modal] clicked: {name:?}");
         }
@@ -2341,7 +2344,8 @@ async fn sweep_modal(
         if click_by_id(client, id).await.is_err() {
             continue;
         }
-        here.swept += 1;
+        // A dismisser belongs to the dialog, not to the surface underneath it.
+        here.revealed += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
         let (after, _) = inspect(client).await?;
         if !reach::modal_open(&after.nodes) {
@@ -2745,6 +2749,12 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         total.vanished += here.vanished;
         total.navigation += here.navigation;
         total.native += here.native;
+        // `blocked` and `revealed` were missing here, so a control trapped
+        // behind an undismissable dialog counted on its surface line and then
+        // disappeared from the run total - the one line most likely to be
+        // quoted as the coverage number.
+        total.blocked += here.blocked;
+        total.revealed += here.revealed;
     }
 
     println!("\n{}", total.line());
