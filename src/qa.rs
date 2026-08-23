@@ -144,23 +144,14 @@ pub struct Check {
     pub hover: Option<String>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
-    /// Drive `click` with a real pointer instead of a synthesised event.
-    ///
-    /// `AgentAction::Click` dispatches a `click` and nothing else, so a control
-    /// that acts on `mousedown` reads as dead to it while working perfectly
-    /// under a real pointer. The rename pencil is exactly that: it opens the
-    /// editor on `mousedown` so the `role="button"` row it sits inside cannot
-    /// swallow the press first. A check for it has to press, not click, or it
-    /// asserts the harness rather than the app.
+    /// Opt into generic coordinate-pointer activation instead of semantic
+    /// node activation. Application suites omit this unless they explicitly
+    /// intend to test hit-testing.
+    #[serde(default)]
     pub press: bool,
     /// The node the assertion is about.
     pub subject: String,
     pub expect: Expect,
-    /// Count only inside the side panel.
-    ///
-    /// True for anything Home also renders, which is most of the row controls.
-    /// False for structure that is global by nature, such as the icon sprite.
-    pub panel_only: bool,
 }
 
 /// Every check, in the order they run, read from the application's own files.
@@ -214,29 +205,10 @@ pub fn checks(dir: Option<&std::path::Path>) -> Result<Vec<Check>, String> {
     Ok(all)
 }
 
-/// The side panel's left edge, in window coordinates.
-///
-/// The panel is a fixed 332px column on the right, and Home renders its own
-/// item list with the same control names. Counting across the whole window
-/// therefore mixes two lists: "Edit " matched 107 nodes and "Copy this
-/// task-log entry" matched 880, most of them Home's, so a panel row appearing
-/// or leaving was lost in the noise. Anything left of this is not the panel.
-// `pub` in a binary crate, so the dead-code pass cannot see the two call sites
-// through the module boundary and reports it unused. It is used: `matching()`
-// below, and the panel resolution in `main.rs`.
-#[allow(dead_code)]
-pub const PANEL_LEFT: f64 = 900.0;
-
-fn matching<'a>(nodes: &'a [SemanticNode], want: &str, panel_only: bool) -> Vec<&'a SemanticNode> {
+fn matching<'a>(nodes: &'a [SemanticNode], want: &str) -> Vec<&'a SemanticNode> {
     nodes
         .iter()
         .filter(|node| node.name.contains(want) || node.role.contains(want))
-        .filter(|node| {
-            !panel_only
-                || node
-                    .bounds
-                    .is_none_or(|b| b[0] >= PANEL_LEFT || b[2] == 0.0)
-        })
         .collect()
 }
 
@@ -269,7 +241,7 @@ pub fn verdict(
     before: &[SemanticNode],
     after: &[SemanticNode],
 ) -> Result<(), String> {
-    let found = matching(after, &check.subject, check.panel_only);
+    let found = matching(after, &check.subject);
     match check.expect {
         Expect::Vanishes => {
             let on_screen: Vec<&SemanticNode> =
@@ -352,7 +324,7 @@ pub fn verdict(
             }
         }
         Expect::PaintsMore => {
-            let was = matching(before, &check.subject, check.panel_only)
+            let was = matching(before, &check.subject)
                 .into_iter()
                 .filter(|node| paints(node))
                 .count();
@@ -365,7 +337,7 @@ pub fn verdict(
             }
         }
         Expect::Grows => {
-            let was = matching(before, &check.subject, check.panel_only).len();
+            let was = matching(before, &check.subject).len();
             let now = found.len();
             if now <= was {
                 return Err(format!(
@@ -375,7 +347,7 @@ pub fn verdict(
             }
         }
         Expect::Holds => {
-            let was = matching(before, &check.subject, check.panel_only).len();
+            let was = matching(before, &check.subject).len();
             let now = found.len();
             if now != was {
                 return Err(format!(
@@ -405,10 +377,10 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
         }
         let action = match (&check.hover, &check.click, check.press) {
             (Some(h), Some(c), true) => format!("hover {h:?}, press {c:?}"),
-            (Some(h), Some(c), false) => format!("hover {h:?}, click {c:?}"),
+            (Some(h), Some(c), false) => format!("hover {h:?}, activate {c:?}"),
             (Some(h), None, _) => format!("hover {h:?}"),
             (None, Some(c), true) => format!("press {c:?}"),
-            (None, Some(c), false) => format!("click {c:?}"),
+            (None, Some(c), false) => format!("activate {c:?}"),
             (None, None, _) => "observe only".to_owned(),
         };
         out.push_str(&format!(
@@ -435,4 +407,23 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
         }
     }
     by_group
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Check;
+
+    fn parse(extra: &str) -> Check {
+        let ron = format!(
+            "(id:\"action\",group:\"group\",what:\"outcome\",open:None,hover:None,\
+             click:Some(\"Save\"),{extra}subject:\"Saved\",expect:Paints)"
+        );
+        ron::from_str(&ron).expect("check parses")
+    }
+
+    #[test]
+    fn checks_default_to_semantic_actions_and_can_opt_into_pointer_press() {
+        assert!(!parse("").press);
+        assert!(parse("press:true,").press);
+    }
 }

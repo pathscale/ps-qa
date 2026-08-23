@@ -72,7 +72,7 @@ ps-qa qa dialog-cancel-dismisses # one check, by id
 `list` needs no running app. Everything else does. Exit code is 1 if any check
 fails, so it drops into CI unchanged.
 
-`QA_TRACE=1` prints the node each check presses, which is how you tell "the
+`--trace` prints the node each check activates, which is how you tell "the
 control is broken" from "the check pressed the wrong thing".
 
 ### Diagnosing, without writing a check
@@ -82,14 +82,16 @@ ps-qa layout "<name>"     # live boxes: x, y, w, h per matching node
 ps-qa dom "<name>" 6      # attributes plus the ancestor chain
 ps-qa paint "<name>"      # the colours the renderer resolved
 ps-qa press "<name>"      # a real pointer: move, down, up
-ps-qa click "<name>"      # a synthesised click at a node id
+ps-qa find "<name>" --role button # semantic matches and their node ids
+ps-qa click --id 1842     # activate one exact semantic node
+ps-qa click "<name>"      # activate the first matching semantic node
 ps-qa nodes               # tree size and a role histogram
 ```
 
-`press` and `click` are not interchangeable, and the difference is diagnostic. A
-control that acts on `mousedown` works under `press` and does nothing under
-`click`. When someone reports a control working that the harness calls dead,
-this is the pair that tells them apart.
+`press` remains a generic, explicit pointer-path diagnostic. Application suites
+use semantic activation by default: resolve a name with `find`, retain the node
+id, and act on that id. When repeated rows intentionally share an accessible
+name, `click --id` selects the intended row without coordinates.
 
 `dom` is usually the fastest way to the answer: a control that writes its state
 but never appears is nearly always a hidden or zero-sized *ancestor*, which the
@@ -99,19 +101,20 @@ chain shows immediately.
 
 A check is a precondition, an action, and an assertion about the state after it:
 
-```rust
-Check {
+```ron
+(
     id: "dialog-cancel-dismisses",
     group: "dialog",
     what: "the fork dialog's Cancel actually dismisses it",
     hover: None,
     click: Some("Cancel"),
-    press: true,
     subject: "Start fork",
-    expect: Expect::Vanishes,
-    panel_only: false,
-}
+    expect: Vanishes,
+)
 ```
+
+Omitting `press` is deliberate and selects semantic node activation. Set
+`press: true` only when a suite explicitly tests coordinate hit-testing.
 
 | Expectation | Passes when |
 | --- | --- |
@@ -202,5 +205,5 @@ questions that need no vocabulary.
 
 Still application-shaped, and worth knowing before pointing this at something
 new: the sweep assumes a tab strip that doubles a tab's label in its accessible
-name, and `PROJECT_TAB` resolves "the first document tab" by that doubling. An
+name, and `DYNAMIC_DOCUMENT` resolves "the first document tab" by that doubling. An
 application that names its tabs differently will need that rule widened.

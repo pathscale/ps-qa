@@ -7,10 +7,9 @@
 //! working picture of a broken feature, and a user asked, correctly and more
 //! than once, for the thing that presses them.
 //!
-//! So this presses them. Against a throwaway profile, so a destructive control
-//! is safe to try: `AZ_DATA_DIR` points the store at a temporary directory that
-//! is deleted afterwards, which is what makes clicking `Delete` a test rather
-//! than an incident.
+//! So this presses them. Run it against an application-configured throwaway
+//! profile so destructive controls cannot affect real data; profile setup is
+//! owned by the application, not this harness.
 //!
 //! # What an expectation is
 //!
