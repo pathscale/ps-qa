@@ -110,7 +110,7 @@ usage: ps-qa <mode> [args]
                               what it could not reach instead of skipping it, so
                               coverage is a number rather than silence.
                               Surfaces: project settings analytics home
-  qa [group]                  drive every panel control and check what the
+  qa [group] [--toon]         drive every panel control and check what the
                               renderer did with it: icons paint, hover reveals
                               the row actions, a status click does not remove
                               the row, revealing adds rows. Exits 1 on any
@@ -1388,6 +1388,7 @@ async fn run_qa(
     client: &mut Client,
     group: Option<&str>,
     checks_dir: Option<&std::path::Path>,
+    toon: bool,
 ) -> Result<usize> {
     let all = qa::checks(checks_dir).map_err(|error| eyre!(error))?;
     // A group *or* one check's id, so chasing a single failure does not mean
@@ -1408,10 +1409,12 @@ async fn run_qa(
         );
     }
 
-    println!(
-        "panel QA: {} checks against the running app\n",
-        selected.len()
-    );
+    if !toon {
+        println!(
+            "panel QA: {} checks against the running app\n",
+            selected.len()
+        );
+    }
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
 
     for check in selected {
@@ -1547,10 +1550,12 @@ async fn run_qa(
             Some(error) => Err(error),
             None => qa::verdict(check, &before.nodes, &after.nodes),
         };
-        let mark = if outcome.is_ok() { "PASS" } else { "FAIL" };
-        println!("  {mark}  [{}] {}", check.group, check.what);
-        if let Err(error) = &outcome {
-            println!("        {error}");
+        if !toon {
+            let mark = if outcome.is_ok() { "PASS" } else { "FAIL" };
+            println!("  {mark}  [{}] {}", check.group, check.what);
+            if let Err(error) = &outcome {
+                println!("        {error}");
+            }
         }
         results.push((check, outcome));
     }
@@ -1559,6 +1564,62 @@ async fn run_qa(
     let tally = qa::tally(&results);
     let mut groups: Vec<_> = tally.iter().collect();
     groups.sort_by_key(|(name, _)| *name);
+
+    /*
+     * TOON, for a caller that is a program - usually a language model.
+     *
+     * The column format below is for a person: reading it back means splitting
+     * on whitespace, which loses any field containing a space. `what` always
+     * contains one and a failure message nearly always does. That mis-parse is
+     * not hypothetical - it is how a node at `[0,58 0x0]` got read as painting.
+     *
+     * TOON rather than JSON because a uniform array declares its length and
+     * field names once, then spends one line per row instead of repeating every
+     * key in every object. For a run of two dozen checks that is a large
+     * fraction of the tokens, and the declared `[n]` lets the reader verify it
+     * received every row rather than a truncated list.
+     *
+     * Nesting is why this is not flat TSV: reporting wants a check to carry its
+     * own detail, and TOON keeps that expressible without giving up the tabular
+     * economy.
+     *
+     * Encoded by `toon-format` rather than by hand. Quoting is the whole
+     * problem here - a check description and a failure message both routinely
+     * contain the delimiter ("Edit " went 19 -> 21, expected no change) - and a
+     * hand-written emitter is a guess at the specification that drifts from it
+     * silently. The crate is generic over `serde::Serialize`, so anything with
+     * a `Serialize` impl encodes without a bespoke path.
+     */
+    if toon {
+        let report = serde_json::json!({
+            "passed": results.len() - failed,
+            "failed": failed,
+            "groups": groups
+                .iter()
+                .map(|(name, (passed, total))| serde_json::json!({
+                    "name": name,
+                    "passed": passed,
+                    "total": total,
+                }))
+                .collect::<Vec<_>>(),
+            "checks": results
+                .iter()
+                .map(|(check, outcome)| serde_json::json!({
+                    "verdict": if outcome.is_ok() { "pass" } else { "fail" },
+                    "group": check.group,
+                    "id": check.id,
+                    "error": outcome.as_ref().err().map_or("", |e| e.as_str()),
+                    "what": check.what,
+                }))
+                .collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
+        );
+        return Ok(failed);
+    }
+
     println!();
     for (name, (passed, total)) in groups {
         println!("  {name:<10} {passed}/{total}");
@@ -1637,6 +1698,119 @@ async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The viewport, read from the tree rather than assumed.
+///
+/// Shared by every driving mode so they agree on what is on screen. `sweep` and
+/// `cover` already read it this way; `open_named` and `press_named` did not,
+/// which is the bug the two helpers below exist to close.
+fn viewport_of(snapshot: &AgentSnapshot) -> (f64, f64) {
+    /*
+     * The window, not `main`.
+     *
+     * `main` starts below the title and tab bar - measured here at y=58 in a
+     * 900px window - so treating its top as the viewport's top declares the tab
+     * strip off-screen. That is chrome sitting legitimately *above* the content
+     * region, and rejecting it made every surface reached by a tab unnavigable.
+     * Taking the top of the window keeps the below-the-fold case, which is what
+     * this bound is actually for, without swallowing the header.
+     */
+    let bottom = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.role == "main")
+        .filter_map(|node| node.bounds)
+        .map(|b| b[1] + b[3])
+        .fold(f64::MIN, f64::max);
+    (0.0, if bottom > f64::MIN { bottom } else { f64::MAX })
+}
+
+/// Whether a node's box lies outside the window, so pressing it would land on
+/// nothing.
+///
+/// A tab strip that overflows keeps its buttons at negative x, and the panel's
+/// lower sections sit below the fold. Both are in the tree, both report
+/// `visible` and `enabled`, and both have a real width and height, so the
+/// obvious predicate accepts them and the press goes to a point the window
+/// never had. That is why `rename-project-header` reported the application's
+/// pencil dead: its project tab sat at x=-742 and the navigation press that was
+/// meant to reach the surface silently hit nothing.
+fn offscreen(bounds: [f64; 4], viewport: (f64, f64)) -> bool {
+    bounds[1] + bounds[3] < viewport.0 || bounds[0] + bounds[2] < 0.0 || bounds[1] > viewport.1
+}
+
+/// Find a named button, scrolling it into view when it is off-screen.
+///
+/// Skipping an off-screen control is honest but useless: an overflowing tab
+/// strip parks every project tab at negative x, so a check that navigates to a
+/// project could never reach one, and the surface behind it was untestable.
+/// `ScrollIntoView` is what a person does by scrolling, so the control is
+/// driven where it actually is rather than at a point outside the window.
+///
+/// Returns the node id and its box *after* any scroll, because the coordinates
+/// the caller presses at must be the ones the renderer just settled on.
+async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4])> {
+    let wanted = want.to_lowercase();
+    /*
+     * An on-screen match wins over an earlier off-screen one.
+     *
+     * Taking the first match in tree order and then asking whether it is
+     * on-screen is wrong when a name matches more than once, which is normal: a
+     * project appears in the tab strip, in the Home list and in its own header.
+     * Doing that reported "Home" unreachable while a perfectly pressable Home
+     * button sat at x=139, because an overflowed copy came first in the tree.
+     */
+    let pick = |snapshot: &AgentSnapshot, viewport: (f64, f64)| -> Option<(u64, [f64; 4])> {
+        let mut fallback = None;
+        for node in snapshot
+            .nodes
+            .iter()
+            .filter(|n| n.role == "button")
+            .filter(|n| n.name.to_lowercase().contains(&wanted))
+            .filter(|n| n.visible && n.enabled)
+        {
+            let Some(bounds) = node.bounds.filter(|b| b[2] > 0.0 && b[3] > 0.0) else {
+                continue;
+            };
+            if !offscreen(bounds, viewport) {
+                return Some((node.id, bounds));
+            }
+            fallback.get_or_insert((node.id, bounds));
+        }
+        fallback
+    };
+
+    let (snapshot, _) = inspect(client).await?;
+    let viewport = viewport_of(&snapshot);
+    let Some((id, bounds)) = pick(&snapshot, viewport) else {
+        bail!("no visible, enabled, sized button matching it");
+    };
+    if !offscreen(bounds, viewport) {
+        return Ok((id, bounds));
+    }
+
+    if std::env::var_os("QA_TRACE").is_some() {
+        println!("        {want:?} is off-screen at {bounds:?}, scrolling it in");
+    }
+    client
+        .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+            node_id: id,
+        }))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Re-inspect rather than reusing the old box: the scroll moved it, and
+    // pressing at where it used to be is the bug this exists to fix.
+    let (settled, _) = inspect(client).await?;
+    let viewport = viewport_of(&settled);
+    let Some((id, bounds)) = pick(&settled, viewport) else {
+        bail!("no visible, enabled, sized button matching it");
+    };
+    if offscreen(bounds, viewport) {
+        bail!("{want:?} is still off-screen after scrolling it into view");
+    }
+    Ok((id, bounds))
+}
+
 /// Double click the first visible match, for reaching a surface.
 ///
 /// A Home row folds on a single click and opens on a double, and two separate
@@ -1646,21 +1820,9 @@ async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
 /// when the surface happened to be open already, which is why checks failed
 /// with "no visible, enabled, sized button" for controls one gesture away.
 async fn open_named(client: &mut Client, want: &str) -> Result<()> {
-    let (snapshot, _) = inspect(client).await?;
-    let wanted = want.to_lowercase();
-    let Some(node) = snapshot
-        .nodes
-        .iter()
-        .filter(|n| n.role == "button")
-        .filter(|n| n.name.to_lowercase().contains(&wanted))
-        .filter(|n| n.visible && n.enabled)
-        .find(|n| n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
-    else {
-        bail!("no visible, enabled, sized button matching it");
-    };
-    let b = node.bounds.unwrap();
+    let (id, b) = locate_button(client, want).await?;
     if std::env::var_os("QA_TRACE").is_some() {
-        println!("        opening {:?} (id {})", node.name, node.id);
+        println!("        opening {want:?} (id {id})");
     }
     double_click_at(client, b[0] + b[2] / 2.0, b[1] + b[3] / 2.0).await
 }
@@ -1673,10 +1835,8 @@ async fn open_named(client: &mut Client, want: &str) -> Result<()> {
 /// inside cannot swallow the press - and a check driven by `click` would assert
 /// the harness rather than the app.
 async fn press_named(client: &mut Client, want: &str) -> Result<()> {
-    let (snapshot, _) = inspect(client).await?;
-    let wanted = want.to_lowercase();
     /*
-     * Buttons only.
+     * Buttons only, and on screen - see `locate_button`.
      *
      * A control and the thing it opens often share an accessible name -
      * an in-place editor gives the pencil and its field the same `label` - so a
@@ -1686,23 +1846,10 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
      * the same substring worked. Restricting to buttons makes the target the
      * control rather than its output.
      */
-    let Some(node) = snapshot
-        .nodes
-        .iter()
-        .filter(|n| n.role == "button")
-        .filter(|n| n.name.to_lowercase().contains(&wanted))
-        .filter(|n| n.visible && n.enabled)
-        .find(|n| n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
-    else {
-        bail!("no visible, enabled, sized button matching it");
-    };
-    let b = node.bounds.unwrap();
+    let (id, b) = locate_button(client, want).await?;
     let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
     if std::env::var_os("QA_TRACE").is_some() {
-        println!(
-            "        pressing {:?} (id {}) at {x:.0},{y:.0}",
-            node.name, node.id
-        );
+        println!("        pressing {want:?} (id {id}) at {x:.0},{y:.0}");
     }
     // Move first: hover state gates some controls, and a press at a point the
     // document never saw hovered is not what a mouse does.
@@ -3341,7 +3488,9 @@ async fn main() -> Result<()> {
                 .and_then(|at| args.get(at + 1))
                 .map(std::path::PathBuf::from);
             let group = group.filter(|g| *g != "--checks");
-            let failed = run_qa(&mut client, group, checks_dir.as_deref()).await?;
+            let toon = args.iter().any(|arg| arg == "--toon");
+            let group = group.filter(|g| *g != "--toon");
+            let failed = run_qa(&mut client, group, checks_dir.as_deref(), toon).await?;
             if failed > 0 {
                 std::process::exit(1);
             }
