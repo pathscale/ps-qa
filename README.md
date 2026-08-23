@@ -133,6 +133,7 @@ Omitting `press` is deliberate and selects semantic node activation. Set
 | `Grows` | more matching nodes are in the tree than before |
 | `Holds` | the count did not change |
 | `Absent` | no matching node at all |
+| `TargetPaints` | the exact accessible name selected for the click still paints |
 
 `Paints` is the one that earns its keep. A node can be in the tree, correctly
 named, and invisible; that is what a dead control looks like from the outside.
