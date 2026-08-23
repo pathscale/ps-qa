@@ -2576,6 +2576,17 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
     }
 
     #[derive(serde::Serialize)]
+    struct RoleRow {
+        role: String,
+        components: usize,
+        reachable: usize,
+        unreachable: usize,
+        anonymous: usize,
+        disabled: usize,
+        manual: usize,
+    }
+
+    #[derive(serde::Serialize)]
     struct InventoryReport {
         components: usize,
         reachable: usize,
@@ -2585,11 +2596,14 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         manual: usize,
         unverified: usize,
         surfaces: Vec<SurfaceRow>,
+        roles: Vec<RoleRow>,
         controls: Vec<ControlRow>,
     }
 
     let mut rows = Vec::new();
     let mut controls = Vec::new();
+    let mut role_counts: std::collections::BTreeMap<String, [usize; 6]> =
+        std::collections::BTreeMap::new();
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
             continue;
@@ -2652,6 +2666,15 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         for node in &components {
             let manual = reach::requires_manual_release_check(&node.name);
             let class = inventory_class(node, manual);
+            let counts = role_counts.entry(node.role.clone()).or_default();
+            counts[0] += 1;
+            match class {
+                InventoryClass::Reachable => counts[1] += 1,
+                InventoryClass::Unreachable => counts[2] += 1,
+                InventoryClass::Anonymous => counts[3] += 1,
+                InventoryClass::Disabled => counts[4] += 1,
+                InventoryClass::Manual => counts[5] += 1,
+            }
             let (classification, reason) = match class {
                 InventoryClass::Manual => ("excluded-manual", "native-dialog-or-external"),
                 InventoryClass::Anonymous => ("failed-anonymous", "no accessible name"),
@@ -2693,6 +2716,18 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         manual: rows.iter().map(|row| row.manual).sum(),
         unverified: rows.iter().map(|row| row.unverified).sum(),
         surfaces: rows,
+        roles: role_counts
+            .into_iter()
+            .map(|(role, counts)| RoleRow {
+                role,
+                components: counts[0],
+                reachable: counts[1],
+                unreachable: counts[2],
+                anonymous: counts[3],
+                disabled: counts[4],
+                manual: counts[5],
+            })
+            .collect(),
         controls,
     };
     let failures = report.unreachable + report.anonymous;
