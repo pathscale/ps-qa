@@ -112,7 +112,7 @@ pub enum Expect {
     /// says `hidden` was still carrying it in the style tree while its subtree
     /// laid out and drew.
     ///
-    /// So a check that trusts `visible` calls a control the owner can see and
+    /// So a check that trusts `visible` calls a control a person can see and
     /// type into dead. Geometry plus a position is the honest question here.
     PaintsNamed,
 }
@@ -256,7 +256,7 @@ fn paints(node: &SemanticNode) -> bool {
      * says `hidden` was still carrying it in the style tree while its subtree
      * laid out and drew.
      *
-     * Trusting the flag called controls dead that the owner can see and use -
+     * Trusting the flag called controls dead that a person can see and use -
      * the icons group reported "246 exist, none paints" for an app visibly
      * full of icons. A non-zero box at a real position is what can be checked
      * honestly from here; `ps-qa paint` is the tool for the pixels themselves.

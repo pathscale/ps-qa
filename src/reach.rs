@@ -100,14 +100,14 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         return Some(tab.name.clone());
     }
     /*
-     * Otherwise a row in the root surface's list, which is what the owner
+     * Otherwise a row in the root surface's list, which is what a person
      * clicks to open one. A fresh profile may have no document tabs in the
      * strip at all, so without this the surface is unreachable on exactly the
      * runs that matter.
      *
      * Preferring a document that has something in it: an empty one renders its
      * panes as a row of empty headers with every per-item control absent, so
-     * the pane the owner cares about most would be on screen with nothing to
+     * the pane a person cares about most would be on screen with nothing to
      * press.
      */
     let rows = || {
@@ -232,7 +232,7 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
 ///
 /// The consequence was not a small error. Home's ~160 row controls were swept
 /// as though they were the project panel's, the panel's own controls were
-/// crowded out of the plan, and the owner - who reports the side panels as
+/// crowded out of the plan, and users - who reports the side panels as
 /// where most problems are - was reading coverage numbers for the wrong
 /// surface.
 ///
@@ -362,8 +362,8 @@ fn surface_marker(surface: &Surface) -> Option<&'static str> {
 ///
 /// A native file chooser is not part of the webview: it is a modal the harness
 /// cannot see in the semantic tree, cannot dismiss with a click, and which
-/// takes the owner's screen until a person closes it. A sweep that presses one
-/// stops being unattended, and the owner reported exactly that - "the open file
+/// takes the user's screen until a person closes it. A sweep that presses one
+/// stops being unattended, and a user reported exactly that - "the open file
 /// dialog is stuck open on the GUI" - mid-run.
 ///
 /// These are skipped rather than judged, and counted in their own bucket so the
@@ -374,14 +374,14 @@ pub fn opens_native_dialog(name: &str) -> bool {
      *
      * This list used to carry "Choose", "Browse" and "Open folder" as well,
      * which is how it grew from "skip the OS file chooser" into a general
-     * posture of not opening things. That posture is what let the fork dialog
+     * posture of not opening things. That posture is what let one dialog
      * ship with a dead Cancel: the sweep never opened an in-app modal, so it
-     * never asked whether it could get back out, and the owner found a trap the
+     * never asked whether it could get back out, and a user found a trap the
      * harness had reported as a clean run.
      *
      * An in-app dialog is a surface like any other and gets swept. Only a
      * native chooser is exempt, because it is not in the webview at all: the
-     * tree cannot see it, no click can dismiss it, and it takes the owner's
+     * tree cannot see it, no click can dismiss it, and it takes the user's
      * screen until a person closes it.
      */
     /*
@@ -396,7 +396,7 @@ pub fn opens_native_dialog(name: &str) -> bool {
      * synthesised click can reach it; Escape through the control protocol goes
      * to the window underneath, and driving it through System Events needs
      * assistive access this process does not have. Pressing one leaves a panel
-     * on the owner's screen until a person closes it, which happened twice
+     * on the user's screen until a person closes it, which happened twice
      * during this audit.
      *
      * These are counted in the `native` bucket and printed, so the report says
@@ -423,7 +423,7 @@ pub fn modal_open(nodes: &[SemanticNode]) -> bool {
 
 /// The controls that would dismiss the modal in front, best first.
 ///
-/// `Cancel` before `Close`, because a fork dialog renders both an × in its
+/// `Cancel` before `Close`, because a dialog often renders both an × in its
 /// header and a `Cancel` in its footer and either should work; trying the named
 /// one first keeps the report readable when neither does.
 pub fn dismissers(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
@@ -487,9 +487,9 @@ pub fn closes_a_surface(name: &str) -> bool {
 /// A modal does not remove the surface behind it: that surface stays in the
 /// tree, `visible` and sized, the same way a retained pane does. So "everything
 /// on screen" is not "everything in the dialog", and sweeping the former made
-/// the fork dialog's pass press `HomeHome`, `Settings` and `Attach files` -
+/// one dialog's pass press `HomeHome`, `Settings` and `Attach files` -
 /// controls that are not in the dialog at all, one of which raises a macOS
-/// panel onto the owner's screen.
+/// panel onto the user's screen.
 ///
 /// Found by climbing from the dismiss control until the subtree stops growing
 /// quickly, which is the dialog's own container: a modal is a small, self
@@ -545,7 +545,7 @@ pub fn enclosing_dialog(nodes: &[SemanticNode], dismiss_id: u64) -> Vec<u64> {
 /// Not an exclusion - these are pressed like everything else - but a cue to
 /// send Escape straight afterwards. A native panel is not in the webview: the
 /// semantic tree cannot see it, no synthesised click can dismiss it, and it
-/// holds the owner's screen until a person closes it. Testing the control and
+/// holds the user's screen until a person closes it. Testing the control and
 /// then getting out of the way is what a person does, and it is the only shape
 /// that satisfies "test everything" without leaving the app wedged.
 pub fn may_open_native_chooser(name: &str) -> bool {
@@ -570,7 +570,7 @@ pub fn may_open_native_chooser(name: &str) -> bool {
 /// folds the section, and with it `Fork <item> into a fresh chat`, `Change the
 /// status of ...`, `Edit the description for ...` and `New item`.
 ///
-/// That is precisely how the fork dialog escaped the audit: the sweep folded
+/// That is precisely how one dialog escaped the audit: the sweep folded
 /// the Items section a dozen controls before it reached the rows, so every
 /// per-item control read as vanished and the dialog was never opened.
 pub fn folds_a_section(name: &str) -> bool {
@@ -895,7 +895,7 @@ mod tests {
             node(3, "button", "Close", Some([0.0, 0.0, 20.0, 20.0])),
         ];
         assert!(modal_open(&dialog));
-        // Cancel first: the fork dialog renders an x in its header and a
+        // Cancel first: a dialog can render an x in its header and a
         // Cancel in its footer, and the named one reads better in a report.
         let ways_out = dismissers(&dialog);
         assert_eq!(ways_out[0].1, "Cancel");
@@ -982,7 +982,7 @@ mod tests {
     fn coverage_reports_an_unaccounted_gap() {
         // Every bucket carries at least one control, so a bucket dropped from
         // `bucketed()` shows up here as an unaccounted gap rather than passing
-        // on a zero that proves nothing. The fork dialog put real controls in
+        // on a zero that proves nothing. One dialog put real controls in
         // `blocked`, which is why it counts.
         let full = Coverage {
             in_tree: 10,
