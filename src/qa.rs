@@ -98,6 +98,18 @@ pub enum Expect {
     /// question the check actually means.
     ///
     /// Written as `role:name`, e.g. `textbox:Rename e`.
+    ///
+    /// Judged on geometry, not on the tree's `visible` flag, because the two
+    /// disagree. Measured on one node at one instant: `paint` reported the
+    /// rename editor `300.0x21.1 at 87,236 fg=#b0b5b9ff opacity=1.00 Visible`
+    /// while `dom` reported the same id `HIDDEN`. `paint` reads what the
+    /// render pass resolved; `visible` walks ancestors looking for
+    /// `display:none` and `aria-hidden`, and a wrapper whose class no longer
+    /// says `hidden` was still carrying it in the style tree while its subtree
+    /// laid out and drew.
+    ///
+    /// So a check that trusts `visible` calls a control the owner can see and
+    /// type into dead. Geometry plus a position is the honest question here.
     PaintsNamed,
 }
 
@@ -183,7 +195,22 @@ fn matching<'a>(nodes: &'a [SemanticNode], want: &str, panel_only: bool) -> Vec<
 /// A zero-area box is the failure this exists to catch: present in the tree,
 /// absent from the window.
 fn paints(node: &SemanticNode) -> bool {
-    node.visible && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+    /*
+     * Geometry alone, because `visible` and the renderer disagree.
+     *
+     * Measured on one node at one instant: `paint` reported the rename editor
+     * `300.0x21.1 at 87,236 opacity=1.00 Visible` while the semantic tree
+     * reported that same id `HIDDEN`. `visible` walks ancestors for
+     * `display:none` and `aria-hidden`, and a wrapper whose class no longer
+     * says `hidden` was still carrying it in the style tree while its subtree
+     * laid out and drew.
+     *
+     * Trusting the flag called controls dead that the owner can see and use -
+     * the icons group reported "246 exist, none paints" for an app visibly
+     * full of icons. A non-zero box at a real position is what can be checked
+     * honestly from here; `ps-qa paint` is the tool for the pixels themselves.
+     */
+    node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
 }
 
 /// The verdict for one check, given the tree before and after its action.
@@ -263,14 +290,14 @@ pub fn verdict(
             let hit = after
                 .iter()
                 .filter(|node| node.role == role && node.name.contains(name))
-                .find(|node| paints(node));
+                .find(|node| node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0));
             if hit.is_none() {
                 let present = after
                     .iter()
                     .filter(|node| node.role == role && node.name.contains(name))
                     .count();
                 return Err(format!(
-                    "no {role} named {name:?} is on screen ({present} in the tree)"
+                    "no {role} named {name:?} has a box ({present} in the tree)"
                 ));
             }
         }

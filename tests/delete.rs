@@ -16,7 +16,7 @@ pub fn checks() -> Vec<Check> {
             id: "delete-asks-first",
             group: "delete",
             what: "deleting a project asks before it removes anything",
-            open: None,
+            open: Some("Home"),
             hover: None,
             click: Some("Delete e"),
             press: true,

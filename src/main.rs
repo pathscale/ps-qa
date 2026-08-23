@@ -1335,10 +1335,44 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
          * distinction that cost a round of chasing a control that was simply
          * on another surface.
          */
+        /*
+         * Navigation is best-effort: already being on the surface is success.
+         *
+         * Checks run in sequence, so a later one often inherits exactly the
+         * screen it would have navigated to, and the control it navigates *by*
+         * is no longer on it. Treating that as a failure reported "could not
+         * open" for a check whose own press had already worked - the verdict
+         * was right there and got overwritten by its own setup.
+         *
+         * A genuinely unreachable surface still fails, one step later, when
+         * the check cannot find the control it is about.
+         */
         let mut open_error = None;
         if let Some(want) = check.open {
-            if let Err(error) = press_named(client, want).await {
-                open_error = Some(format!("could not open {want:?}: {error}"));
+            let already = check.subject.split_once(':').map_or(check.subject, |(_, n)| n);
+            let (here, _) = inspect(client).await?;
+            let arrived = here
+                .nodes
+                .iter()
+                .any(|n| n.name.contains(already) && n.bounds.is_some());
+            if !arrived {
+                /*
+                 * Two steps, because the opener may not be on this surface.
+                 *
+                 * A project is opened from a Home row, and once the project is
+                 * in front that row is gone - so a check that navigates by it
+                 * failed with "no visible, enabled, sized button" for a
+                 * surface that was one press away. Going to Home first is a
+                 * no-op when already there, and `Home` is always in the tab
+                 * strip.
+                 */
+                if press_named(client, want).await.is_err() {
+                    let _ = press_named(client, "Home").await;
+                    settle(client, None).await?;
+                    if let Err(error) = press_named(client, want).await {
+                        open_error = Some(format!("could not open {want:?}: {error}"));
+                    }
+                }
             }
             settle(client, None).await?;
         }

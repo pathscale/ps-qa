@@ -27,7 +27,7 @@ pub fn checks() -> Vec<Check> {
             id: "dialog-opens",
             group: "dialog",
             what: "the fork dialog opens when its control is pressed",
-            open: None,
+            open: Some("Home"),
             hover: None,
             click: Some("Fork "),
             press: true,
@@ -39,7 +39,7 @@ pub fn checks() -> Vec<Check> {
             id: "dialog-cancel-dismisses",
             group: "dialog",
             what: "the fork dialog's Cancel actually dismisses it",
-            open: None,
+            open: Some("Home"),
             hover: None,
             // The trap: `AppModal` re-parented its root with
             // `document.body.append`, Blitz reallocated the slot, and the
