@@ -2032,6 +2032,30 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         if !offscreen(target.1, viewport) {
             return Ok(target);
         }
+
+        // `scrollIntoView` can finish the innermost list while its containing
+        // panel is still below the viewport. Move the outermost semantic
+        // ancestor's nearest scroller by exactly the remaining vertical gap;
+        // the node id still selects the scroll context, never a screen point.
+        let delta_y = if target.1[1] > viewport.1 {
+            target.1[1] + target.1[3] - viewport.1 + 16.0
+        } else if target.1[1] + target.1[3] < viewport.0 {
+            target.1[1] - viewport.0 - 16.0
+        } else {
+            0.0
+        };
+        if delta_y != 0.0
+            && let Some(node_id) = reach::reveal_chain(&settled.nodes, target.0).first()
+        {
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::ScrollBy {
+                    node_id: *node_id,
+                    delta_x: 0.0,
+                    delta_y,
+                }))
+                .await?;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
         latest = settled;
     }
     bail!(
