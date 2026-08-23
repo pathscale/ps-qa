@@ -30,6 +30,7 @@
 //!     sections: ["Items", "Log"],
 //!     document_row_markers: [" open \u{b7} "],
 //!     close_prefixes: ["Close "],
+//!     dismiss_controls: ["Leave dialog"],
 //!     row_action_prefixes: ["Rename "],
 //!     fold_prefixes: ["Collapse ", "Hide "],
 //!     deferred_controls: ["Start setup"],
@@ -120,6 +121,13 @@ pub struct AppProfile {
     /// A prefix rather than a whole name because the label carries the subject:
     /// `Close <document>`.
     pub close_prefixes: Vec<String>,
+    /// Accessible names of controls that dismiss an in-app dialog.
+    ///
+    /// The harness detects a modal structurally from its semantic role. Names
+    /// remain application data because products and languages call their exit
+    /// actions different things. Order is preference order when a dialog
+    /// offers more than one way out.
+    pub dismiss_controls: Vec<String>,
     /// Prefixes of controls that act on a row without opening it, e.g. `Rename `.
     ///
     /// Excluded when looking for the control that *opens* a document, because a
@@ -192,6 +200,13 @@ impl AppProfile {
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;
         ron::from_str(&text).map_err(|error| format!("could not parse {}: {error}", path.display()))
+    }
+
+    /// Whether this exact accessible name dismisses an in-app dialog.
+    pub fn dismisses_dialog(&self, name: &str) -> bool {
+        self.dismiss_controls
+            .iter()
+            .any(|control| name.eq_ignore_ascii_case(control))
     }
 
     /// Whether a name is a section header, with or without its count.
@@ -288,6 +303,7 @@ mod tests {
             inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],
+            dismiss_controls: vec!["Leave dialog".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],
             fold_prefixes: vec!["Collapse ".to_owned()],
             manual_controls: vec![ManualControl {
@@ -300,5 +316,6 @@ mod tests {
         assert_eq!(back.surfaces.len(), 1);
         assert_eq!(back.sections, vec!["Items".to_owned()]);
         assert_eq!(back.transcript_region.as_deref(), Some("Conversation"));
+        assert!(back.dismisses_dialog("leave dialog"));
     }
 }
