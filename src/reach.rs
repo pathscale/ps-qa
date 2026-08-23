@@ -206,6 +206,13 @@ pub fn navigates(name: &str) -> bool {
     if profile().is_permanent(name) {
         return true;
     }
+    if profile()
+        .navigation_controls
+        .iter()
+        .any(|control| name.eq_ignore_ascii_case(control))
+    {
+        return true;
+    }
     /*
      * A tab in the strip, whose label the strip doubles.
      *
@@ -217,6 +224,40 @@ pub fn navigates(name: &str) -> bool {
      * it here loses no coverage.
      */
     doubled(name).is_some()
+}
+
+/// Whether this button opens the document represented by its surrounding row.
+///
+/// User-owned document names cannot live in an application profile. A row
+/// action can still identify them without guessing: if `Rename Report` is a
+/// configured row-action form, the sibling button named exactly `Report` is
+/// the row opener. The action itself is never classified as navigation.
+pub fn opens_document_row(nodes: &[SemanticNode], id: u64) -> bool {
+    opens_document_row_for(profile(), nodes, id)
+}
+
+fn opens_document_row_for(
+    profile: &crate::app::AppProfile,
+    nodes: &[SemanticNode],
+    id: u64,
+) -> bool {
+    let Some(candidate) = nodes
+        .iter()
+        .find(|node| node.id == id && node.role == "button" && onscreen(node))
+    else {
+        return false;
+    };
+    profile.row_action_prefixes.iter().any(|prefix| {
+        nodes.iter().any(|action| {
+            action.id != candidate.id
+                && action.role == "button"
+                && onscreen(action)
+                && action
+                    .name
+                    .strip_prefix(prefix.as_str())
+                    .is_some_and(|subject| subject == candidate.name)
+        })
+    })
 }
 
 /// The single label behind a doubled tab-strip name, if it is one.
@@ -840,6 +881,20 @@ mod tests {
         // Not every even-length name is a doubled label.
         assert!(!navigates("Send"));
         assert!(!navigates("Copy"));
+    }
+
+    #[test]
+    fn a_row_opener_is_derived_from_profile_owned_action_prefixes() {
+        let profile = crate::app::AppProfile {
+            row_action_prefixes: vec!["Rename ".to_owned()],
+            ..Default::default()
+        };
+        let nodes = vec![
+            node(1, "button", "Report", Some([0.0, 0.0, 80.0, 20.0])),
+            node(2, "button", "Rename Report", Some([90.0, 0.0, 20.0, 20.0])),
+        ];
+        assert!(opens_document_row_for(&profile, &nodes, 1));
+        assert!(!opens_document_row_for(&profile, &nodes, 2));
     }
 
     #[test]
