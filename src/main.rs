@@ -1349,12 +1349,21 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
          */
         let mut open_error = None;
         if let Some(want) = check.open {
-            let already = check.subject.split_once(':').map_or(check.subject, |(_, n)| n);
+            /*
+             * "Already there" is judged by the *click target*, not the subject.
+             *
+             * Judged by the subject, a check whose subject is `Items` decided
+             * it had arrived because Home renders that word too, skipped the
+             * navigation, and then could not find the control it was about.
+             * The control the check is going to drive is the honest test of
+             * whether the surface is in front.
+             */
+            let want_here = check.click.unwrap_or(check.subject);
             let (here, _) = inspect(client).await?;
-            let arrived = here
-                .nodes
-                .iter()
-                .any(|n| n.name.contains(already) && n.bounds.is_some());
+            let arrived = here.nodes.iter().any(|n| {
+                n.name.contains(want_here)
+                    && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+            });
             if !arrived {
                 /*
                  * Two steps, because the opener may not be on this surface.
