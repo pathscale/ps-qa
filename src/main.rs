@@ -1232,42 +1232,24 @@ async fn type_keys(client: &mut Client, count: usize, want: &str) -> Result<()> 
     Ok(())
 }
 
-/// Enter literal text through the focused node's semantic input path.
+/// Set literal text on an exact semantic text-field node.
 async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<()> {
     let (snapshot, _) = inspect(client).await?;
     let field = find_text_field(&snapshot.nodes, want)
         .ok_or_else(|| eyre!("no enabled, visible text field matching {want:?}"))?;
-    client
-        .agent(&AgentControlRequest::Act(AgentAction::Click {
+    if cli::trace() {
+        println!("        setting {want:?} (id {})", field.id);
+    }
+    let answer = client
+        .agent(&AgentControlRequest::Act(AgentAction::SetValue {
             node_id: field.id,
+            value: text.to_owned(),
         }))
         .await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    for character in text.chars() {
-        let code = if character == ' ' {
-            "Space".to_owned()
-        } else if character.is_ascii_alphabetic() {
-            format!("Key{}", character.to_ascii_uppercase())
-        } else if character.is_ascii_digit() {
-            format!("Digit{character}")
-        } else {
-            bail!("literal QA text does not support character {character:?}");
-        };
-        for phase in [KeyPhase::Down, KeyPhase::Up] {
-            client
-                .agent(&AgentControlRequest::Act(AgentAction::Input(
-                    InputCommand::Key {
-                        phase,
-                        key: character.to_string(),
-                        code: code.clone(),
-                        modifiers: Modifiers::default(),
-                    },
-                )))
-                .await?;
-        }
-        sleep_pace().await;
+    if let DebugResponse::Error(error) = answer.response {
+        bail!("{} ({})", error.message, error.code);
     }
+    tokio::time::sleep(Duration::from_millis(150)).await;
     Ok(())
 }
 
