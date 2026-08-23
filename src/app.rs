@@ -83,6 +83,31 @@ pub struct AppProfile {
     /// Used to recover when a sweep has walked somewhere it cannot get back
     /// from. Without it the harness simply reports the surface as unreachable.
     pub home_opener: Option<String>,
+    /// Substrings that identify a document row in a list.
+    ///
+    /// A document's own name is not matchable: it is user data, and in a
+    /// scrubbed QA profile it differs per build. What is stable is the summary
+    /// the list renders beside it, so an application states the fragments of
+    /// that summary instead. AgencyZero rows read `... 1 open . 2 turns` or
+    /// `no working directory`; another application will render something else
+    /// entirely, and one that ships none simply has no row fallback.
+    pub document_row_markers: Vec<String>,
+    /// Prefixes of controls that close a surface, e.g. `Close `.
+    ///
+    /// These retire the pane everything else stands on, so they are swept last.
+    /// A prefix rather than a whole name because the label carries the subject:
+    /// `Close <document>`.
+    pub close_prefixes: Vec<String>,
+    /// Prefixes of controls that act on a row without opening it, e.g. `Rename `.
+    ///
+    /// Excluded when looking for the control that *opens* a document, because a
+    /// row's rename pencil sits beside its opener and matches the same row name.
+    pub row_action_prefixes: Vec<String>,
+    /// Prefixes of controls that hide or fold a region, e.g. `Collapse `.
+    ///
+    /// Matched case-insensitively. Swept last for the same reason a section
+    /// header is: pressing one takes everything beneath it off screen.
+    pub fold_prefixes: Vec<String>,
     /// Controls that must be pressed last, beyond the collapsible sections.
     ///
     /// A control that opens a new document navigates away and takes the rest of
@@ -192,6 +217,10 @@ mod tests {
             transcript_region: Some("Conversation".to_owned()),
             home_opener: Some("Home".to_owned()),
             deferred_controls: vec!["New project".to_owned()],
+            document_row_markers: vec![" open · ".to_owned()],
+            close_prefixes: vec!["Close ".to_owned()],
+            row_action_prefixes: vec!["Rename ".to_owned()],
+            fold_prefixes: vec!["Collapse ".to_owned()],
         };
         let text = ron::to_string(&profile).expect("serialises");
         let back: AppProfile = ron::from_str(&text).expect("parses");

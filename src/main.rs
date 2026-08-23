@@ -2603,12 +2603,14 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         for node in &buttons {
             if !reach::onscreen(node) {
                 here.unreachable += 1;
-            } else if node.name.to_lowercase().starts_with("collapse ")
+            } else if reach::profile()
+                .fold_prefixes
+                .iter()
+                .any(|p| node.name.to_lowercase().starts_with(&p.to_lowercase()))
                 || reach::profile()
                     .deferred_controls
                     .iter()
                     .any(|c| node.name.eq_ignore_ascii_case(c))
-                || node.name.starts_with("Hide ")
                 || reach::folds_a_section(&node.name)
             {
                 /*
