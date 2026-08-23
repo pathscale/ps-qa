@@ -1431,7 +1431,19 @@ async fn run_qa(
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
         let mut click_error = None;
+        let mut action_target = None;
         if let Some(want) = check.click.as_deref() {
+            if check.expect == qa::Expect::TargetPaints && !check.press {
+                let (tree, _) = inspect(client).await?;
+                let wanted = want.to_lowercase();
+                action_target = tree
+                    .nodes
+                    .iter()
+                    .find(|node| {
+                        node.name.to_lowercase().contains(&wanted) && node.visible && node.enabled
+                    })
+                    .map(|node| node.name.clone());
+            }
             let driven = if check.press {
                 press_named(client, want).await
             } else {
@@ -1458,6 +1470,19 @@ async fn run_qa(
         let (after, _) = inspect(client).await?;
         let outcome = match open_error.or(click_error) {
             Some(error) => Err(error),
+            None if check.expect == qa::Expect::TargetPaints => {
+                let Some(subject) = action_target else {
+                    results.push((
+                        check,
+                        Err("could not resolve the exact click target".to_owned()),
+                    ));
+                    continue;
+                };
+                let mut targeted = (*check).clone();
+                targeted.subject = subject;
+                targeted.expect = qa::Expect::Paints;
+                qa::verdict(&targeted, &before.nodes, &after.nodes)
+            }
             None => qa::verdict(check, &before.nodes, &after.nodes),
         };
         results.push((check, outcome));
@@ -2487,6 +2512,14 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
     }
 
     #[derive(serde::Serialize)]
+    struct FaultRow {
+        surface: String,
+        id: u64,
+        name: String,
+        reason: String,
+    }
+
+    #[derive(serde::Serialize)]
     struct InventoryReport {
         buttons: usize,
         reachable: usize,
@@ -2494,9 +2527,11 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: usize,
         manual: usize,
         surfaces: Vec<SurfaceRow>,
+        controls: Vec<FaultRow>,
     }
 
     let mut rows = Vec::new();
+    let mut faults = Vec::new();
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
             continue;
@@ -2554,6 +2589,32 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             .iter()
             .filter(|node| reach::requires_manual_release_check(&node.name))
             .count();
+        for node in &buttons {
+            let mut reasons = Vec::new();
+            if node.name.trim().is_empty() {
+                reasons.push("anonymous");
+            }
+            if !node.visible {
+                reasons.push("hidden");
+            }
+            if !node.enabled {
+                reasons.push("disabled");
+            }
+            if !node
+                .bounds
+                .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+            {
+                reasons.push("no-box");
+            }
+            if !reasons.is_empty() {
+                faults.push(FaultRow {
+                    surface: surface.name.clone(),
+                    id: node.id,
+                    name: node.name.clone(),
+                    reason: reasons.join(","),
+                });
+            }
+        }
         rows.push(SurfaceRow {
             surface: surface.name.clone(),
             opened: true,
@@ -2574,6 +2635,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: rows.iter().map(|row| row.anonymous).sum(),
         manual: rows.iter().map(|row| row.manual).sum(),
         surfaces: rows,
+        controls: faults,
     };
     let failures = report.unreachable + report.anonymous;
     println!(

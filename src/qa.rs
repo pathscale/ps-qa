@@ -47,7 +47,7 @@ use std::collections::HashMap;
 /// unconstructed the moment one check was strengthened to `PaintsMore`; it is
 /// still the correct assertion for anything that mounts without painting.
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Expect {
     /// The named node exists, is visible, and has a non-zero box.
     ///
@@ -115,6 +115,12 @@ pub enum Expect {
     /// So a check that trusts `visible` calls a control a person can see and
     /// type into dead. Geometry plus a position is the honest question here.
     PaintsNamed,
+    /// The exact accessible name selected for this check's click still paints.
+    ///
+    /// Use this for a row action whose label includes the row identity. It
+    /// proves that exact row survived without comparing a broad family count
+    /// that hover-revealed neighbours can legitimately change.
+    TargetPaints,
 }
 
 /// One thing that must be true of the running panel.
@@ -322,6 +328,9 @@ pub fn verdict(
                     "no {role} named {name:?} has a box ({present} in the tree)"
                 ));
             }
+        }
+        Expect::TargetPaints => {
+            return Err("TargetPaints must be resolved by the live QA runner".to_owned());
         }
         Expect::PaintsMore => {
             let was = matching(before, &check.subject)
