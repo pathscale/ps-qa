@@ -2583,15 +2583,18 @@ async fn hover_all_rows(client: &mut Client) -> Result<usize> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InventoryClass {
     Manual,
+    Isolated,
     Anonymous,
     Unreachable,
     Disabled,
     Reachable,
 }
 
-fn inventory_class(node: &SemanticNode, manual: bool) -> InventoryClass {
+fn inventory_class(node: &SemanticNode, manual: bool, isolated: bool) -> InventoryClass {
     if manual {
         InventoryClass::Manual
+    } else if isolated {
+        InventoryClass::Isolated
     } else if node.name.trim().is_empty() {
         InventoryClass::Anonymous
     } else if !reach::onscreen(node) {
@@ -2614,6 +2617,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: usize,
         disabled: usize,
         manual: usize,
+        isolated: usize,
         unverified: usize,
         sections_opened: usize,
         rows_hovered: usize,
@@ -2638,6 +2642,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: usize,
         disabled: usize,
         manual: usize,
+        isolated: usize,
     }
 
     #[derive(serde::Serialize)]
@@ -2648,6 +2653,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: usize,
         disabled: usize,
         manual: usize,
+        isolated: usize,
         unverified: usize,
         surfaces: Vec<SurfaceRow>,
         roles: Vec<RoleRow>,
@@ -2656,7 +2662,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
 
     let mut rows = Vec::new();
     let mut controls = Vec::new();
-    let mut role_counts: std::collections::BTreeMap<String, [usize; 6]> =
+    let mut role_counts: std::collections::BTreeMap<String, [usize; 7]> =
         std::collections::BTreeMap::new();
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
@@ -2672,6 +2678,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 anonymous: 0,
                 disabled: 0,
                 manual: 0,
+                isolated: 0,
                 unverified: 0,
                 sections_opened: 0,
                 rows_hovered: 0,
@@ -2690,6 +2697,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 anonymous: 0,
                 disabled: 0,
                 manual: 0,
+                isolated: 0,
                 unverified: 0,
                 sections_opened,
                 rows_hovered: 0,
@@ -2708,7 +2716,13 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             .collect();
         let classes: Vec<_> = components
             .iter()
-            .map(|node| inventory_class(node, reach::requires_manual_release_check(&node.name)))
+            .map(|node| {
+                inventory_class(
+                    node,
+                    reach::requires_manual_release_check(&node.name),
+                    reach::requires_isolated_outcome(&node.name),
+                )
+            })
             .collect();
         let count = |class| classes.iter().filter(|found| **found == class).count();
         let reachable = count(InventoryClass::Reachable);
@@ -2716,10 +2730,12 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         let anonymous = count(InventoryClass::Anonymous);
         let disabled = count(InventoryClass::Disabled);
         let manual = count(InventoryClass::Manual);
-        let unverified = reachable;
+        let isolated = count(InventoryClass::Isolated);
+        let unverified = reachable + isolated;
         for node in &components {
             let manual = reach::requires_manual_release_check(&node.name);
-            let class = inventory_class(node, manual);
+            let isolated = reach::requires_isolated_outcome(&node.name);
+            let class = inventory_class(node, manual, isolated);
             let counts = role_counts.entry(node.role.clone()).or_default();
             counts[0] += 1;
             match class {
@@ -2728,9 +2744,14 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 InventoryClass::Anonymous => counts[3] += 1,
                 InventoryClass::Disabled => counts[4] += 1,
                 InventoryClass::Manual => counts[5] += 1,
+                InventoryClass::Isolated => counts[6] += 1,
             }
             let (classification, reason) = match class {
                 InventoryClass::Manual => ("excluded-manual", "native-dialog-or-external"),
+                InventoryClass::Isolated => (
+                    "isolated-unverified",
+                    "requires disposable-process outcome check",
+                ),
                 InventoryClass::Anonymous => ("failed-anonymous", "no accessible name"),
                 InventoryClass::Unreachable if !node.visible => ("failed-reachability", "hidden"),
                 InventoryClass::Unreachable => ("failed-reachability", "no-box"),
@@ -2755,6 +2776,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             anonymous,
             disabled,
             manual,
+            isolated,
             unverified,
             sections_opened,
             rows_hovered,
@@ -2768,6 +2790,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         anonymous: rows.iter().map(|row| row.anonymous).sum(),
         disabled: rows.iter().map(|row| row.disabled).sum(),
         manual: rows.iter().map(|row| row.manual).sum(),
+        isolated: rows.iter().map(|row| row.isolated).sum(),
         unverified: rows.iter().map(|row| row.unverified).sum(),
         surfaces: rows,
         roles: role_counts
@@ -2780,6 +2803,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 anonymous: counts[3],
                 disabled: counts[4],
                 manual: counts[5],
+                isolated: counts[6],
             })
             .collect(),
         controls,
@@ -4049,23 +4073,27 @@ mod tests {
     #[test]
     fn inventory_categories_are_mutually_exclusive() {
         assert_eq!(
-            inventory_class(&component("Attach files", true, true), true),
+            inventory_class(&component("Attach files", true, true), true, false),
             InventoryClass::Manual
         );
         assert_eq!(
-            inventory_class(&component("", false, false), false),
+            inventory_class(&component("Restart", true, true), false, true),
+            InventoryClass::Isolated
+        );
+        assert_eq!(
+            inventory_class(&component("", false, false), false, false),
             InventoryClass::Anonymous
         );
         assert_eq!(
-            inventory_class(&component("Save", false, true), false),
+            inventory_class(&component("Save", false, true), false, false),
             InventoryClass::Disabled
         );
         assert_eq!(
-            inventory_class(&component("Hidden", true, false), false),
+            inventory_class(&component("Hidden", true, false), false, false),
             InventoryClass::Unreachable
         );
         assert_eq!(
-            inventory_class(&component("Synchronize", true, true), false),
+            inventory_class(&component("Synchronize", true, true), false, false),
             InventoryClass::Reachable
         );
     }
