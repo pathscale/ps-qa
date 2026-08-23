@@ -302,8 +302,13 @@ pub enum Command {
 
     /// Click the first matching visible, enabled node.
     Click {
-        /// Match the control whose accessible name contains this.
-        name: String,
+        /// Match the control whose accessible name contains this. Omit when
+        /// `--id` comes from `find`.
+        #[arg(required_unless_present = "id")]
+        name: Option<String>,
+        /// Activate this exact semantic node id.
+        #[arg(long, conflicts_with = "name")]
+        id: Option<u64>,
     },
 
     /// Every button in the running application, measured against what the

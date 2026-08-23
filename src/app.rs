@@ -58,15 +58,19 @@ pub struct SurfaceSpec {
     pub name: String,
     /// The accessible name of the control that navigates here.
     ///
-    /// [`PROJECT_TAB`](crate::reach::PROJECT_TAB) stands in for "whatever the
-    /// first project-like tab is", resolved at run time, for applications whose
-    /// document names are not fixed strings.
+    /// [`DYNAMIC_DOCUMENT`](crate::reach::DYNAMIC_DOCUMENT) stands in for the
+    /// first user-named document, resolved at run time when fixture names are
+    /// not stable.
     pub opener: String,
+    /// A control unique to this surface, used to prove it is in front and to
+    /// scope coverage to its semantic subtree.
+    #[serde(default)]
+    pub marker: Option<String>,
 }
 
-/// A control that opens a native modal, and what to call it in the report.
+/// A control reserved for the manual release pass, and what it opens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NativeChooser {
+pub struct ManualControl {
     /// The control's accessible name.
     pub label: String,
     /// What the application calls the thing it opens, for the worklist.
@@ -123,7 +127,7 @@ pub struct AppProfile {
     /// Matched case-insensitively. Swept last for the same reason a section
     /// header is: pressing one takes everything beneath it off screen.
     pub fold_prefixes: Vec<String>,
-    /// Controls that hand the screen to a native modal the harness cannot drive.
+    /// Controls that cannot safely run in an unattended renderer audit.
     ///
     /// A native file panel is not in the tree, no synthesised click or key
     /// reaches it, and opening one unattended leaves a run stuck behind a
@@ -133,7 +137,8 @@ pub struct AppProfile {
     ///
     /// `label` is the control's accessible name; `command` is whatever the
     /// application wants printed beside it in the worklist.
-    pub native_choosers: Vec<NativeChooser>,
+    #[serde(alias = "native_choosers")]
+    pub manual_controls: Vec<ManualControl>,
     /// Controls that must be pressed last, beyond the collapsible sections.
     ///
     /// A control that opens a new document navigates away and takes the rest of
@@ -253,6 +258,7 @@ mod tests {
             surfaces: vec![SurfaceSpec {
                 name: "home".to_owned(),
                 opener: "Home".to_owned(),
+                marker: Some("Dashboard heading".to_owned()),
             }],
             permanent_surfaces: vec!["Home".to_owned()],
             sections: vec!["Items".to_owned()],
@@ -263,7 +269,7 @@ mod tests {
             close_prefixes: vec!["Close ".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],
             fold_prefixes: vec!["Collapse ".to_owned()],
-            native_choosers: vec![NativeChooser {
+            manual_controls: vec![ManualControl {
                 label: "Attach files".to_owned(),
                 command: "choose_attachments".to_owned(),
             }],

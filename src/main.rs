@@ -1382,7 +1382,7 @@ async fn run_qa(
                  * navigating, and single-pressing a Home row folds it, so
                  * committing to either gesture broke the other set of checks.
                  */
-                let _ = press_named(client, want).await;
+                let _ = click_named_quiet(client, want).await;
                 settle(client, None).await?;
                 let (now, _) = inspect(client).await?;
                 let there = now.nodes.iter().any(|n| {
@@ -1390,7 +1390,7 @@ async fn run_qa(
                 });
                 if !there && open_named(client, want).await.is_err() {
                     if let Some(home) = reach::profile().home_opener.as_deref() {
-                        let _ = press_named(client, home).await;
+                        let _ = click_named_quiet(client, home).await;
                     }
                     settle(client, None).await?;
                     if let Err(error) = open_named(client, want).await {
@@ -1409,18 +1409,22 @@ async fn run_qa(
         // matches. Home renders the same control names, so hovering by name
         // alone landed on Home's list and reported the panel's arrows missing.
         if let Some(want) = check.hover.as_deref() {
-            let target = if check.panel_only {
-                let (tree, _) = inspect(client).await?;
-                tree.nodes
-                    .iter()
-                    .filter(|node| node.name.contains(want) && node.visible)
-                    .filter_map(|node| node.bounds.map(|b| (node, b)))
-                    .find(|(_, b)| b[0] >= qa::PANEL_LEFT && b[2] > 0.0)
-                    .map(|(_, b)| format!("{},{}", b[0] + b[2] / 2.0, b[1] + b[3] / 2.0))
-            } else {
-                None
+            let (tree, _) = inspect(client).await?;
+            let target = tree
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.name.contains(want)
+                        && node.visible
+                        && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                })
+                .map(|node| node.id);
+            let Some(node_id) = target else {
+                bail!("no visible, sized node matching {want:?} to hover");
             };
-            hover_over(client, target.as_deref().unwrap_or(want)).await?;
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+                .await?;
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
 
@@ -1906,11 +1910,16 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
 /// when the surface happened to be open already, which is why checks failed
 /// with "no visible, enabled, sized button" for controls one gesture away.
 async fn open_named(client: &mut Client, want: &str) -> Result<()> {
-    let (id, b) = locate_button(client, want).await?;
+    let (id, _) = locate_button(client, want).await?;
     if cli::trace() {
         println!("        opening {want:?} (id {id})");
     }
-    double_click_at(client, b[0] + b[2] / 2.0, b[1] + b[3] / 2.0).await
+    client
+        .agent(&AgentControlRequest::Act(AgentAction::DoubleClick {
+            node_id: id,
+        }))
+        .await?;
+    Ok(())
 }
 
 /// Move, press and release over the first visible match, for the QA runner.
@@ -2459,7 +2468,7 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     // so the tab is found by shape (a tab is the button whose `Close` twin the
     // strip renders beside it) rather than by a string that would differ per
     // profile.
-    let opener = if surface.opener == reach::PROJECT_TAB {
+    let opener = if surface.opener == reach::DYNAMIC_DOCUMENT {
         /*
          * Via Home, because that is the only surface a project can be opened
          * from on a fresh profile.
@@ -2471,14 +2480,14 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
          * matter. Cheap when a tab already exists: the lookup prefers it.
          */
         let (here, _) = inspect(client).await?;
-        if reach::project_opener(&here.nodes).is_none() {
+        if reach::document_opener(&here.nodes).is_none() {
             if let Some(home) = reach::profile().home_opener.as_deref() {
                 let _ = click_named_quiet(client, home).await;
             }
             tokio::time::sleep(Duration::from_millis(600)).await;
         }
         let (tree, _) = inspect(client).await?;
-        match reach::project_opener(&tree.nodes) {
+        match reach::document_opener(&tree.nodes) {
             Some(name) => name,
             None => return Ok(false),
         }
@@ -2501,7 +2510,7 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
      * opens the tab". A tab already in the strip is an ordinary single click,
      * so only the Home-row path needs the gesture.
      */
-    if surface.opener == reach::PROJECT_TAB {
+    if surface.opener == reach::DYNAMIC_DOCUMENT {
         /*
          * Scrolled into view before it is aimed at.
          *
@@ -2547,7 +2556,7 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     // a modal on the current one is swallowing the direct hop.
     // Not for the project surface: its opener is a gesture, and repeating it as
     // a single click would fold the row rather than open it.
-    if surface.opener == reach::PROJECT_TAB {
+    if surface.opener == reach::DYNAMIC_DOCUMENT {
         return Ok(false);
     }
     if let Some(home) = reach::profile().home_opener.as_deref() {
@@ -2633,7 +2642,7 @@ async fn sweep_modal(
         .filter(|n| !n.name.trim().is_empty())
         .filter(|n| !dismiss_ids.contains(&n.id))
         .filter(|n| scope.contains(&n.id))
-        .filter(|n| !reach::opens_native_dialog(&n.name))
+        .filter(|n| !reach::requires_manual_release_check(&n.name))
         .map(|n| (n.id, n.name.clone()))
         .collect();
 
@@ -2747,7 +2756,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
     let mut total = reach::Coverage::default();
     let mut failures: Vec<(String, String, String)> = Vec::new();
     // Named, so the manual worklist at the end is what this run actually met.
-    let mut skipped_native: Vec<String> = Vec::new();
+    let mut skipped_manual: Vec<String> = Vec::new();
 
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
@@ -2875,15 +2884,15 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 // mid-plan navigates away and every later button on this
                 // surface reads as vanished.
                 here.navigation += 1;
-            } else if reach::opens_native_dialog(&node.name) {
+            } else if reach::requires_manual_release_check(&node.name) {
                 // Never pressed unattended: a native chooser takes the user's
                 // screen and cannot be dismissed from here.
-                here.native += 1;
-                skipped_native.push(node.name.clone());
+                here.manual += 1;
+                skipped_manual.push(node.name.clone());
             } else if reach::restarts_the_app(&node.name) {
                 // Opens a setup flow that swallows navigation for the rest of
                 // the run; counted, never pressed.
-                here.native += 1;
+                here.manual += 1;
             } else if reach::closes_a_surface(&node.name) {
                 /*
                  * Swept, but after everything that stands on the tab it
@@ -3094,7 +3103,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         total.hidden += here.hidden;
         total.vanished += here.vanished;
         total.navigation += here.navigation;
-        total.native += here.native;
+        total.manual += here.manual;
         // `blocked` and `revealed` were missing here, so a control trapped
         // behind an undismissable dialog counted on its surface line and then
         // disappeared from the run total - the one line most likely to be
@@ -3108,28 +3117,27 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
      * The exceptions, named, every run.
      *
      * A skipped control that is only a number in a bucket is a control nobody
-     * remembers to test. These are the seven macOS file panels the harness
-     * cannot drive - not in the webview, invisible to the tree, and no
-     * synthesised click or key reaches them - so they need a person, and the
-     * report says so rather than implying the run covered everything.
+     * remembers to test. Native dialogs that cannot be closed and controls
+     * that open external destinations need a person, so the report says so
+     * rather than implying the automated run covered them.
      */
-    if total.native > 0 {
+    if total.manual > 0 {
         println!(
-            "\n{} control(s) need a manual pass - macOS file panels this harness cannot drive:",
-            total.native
+            "\n{} control(s) need the manual release pass:",
+            total.manual
         );
         // Only the ones this run actually met, so the list is a worklist rather
         // than a catalogue of everything that could theoretically be skipped.
-        let mut seen: Vec<&str> = skipped_native.iter().map(String::as_str).collect();
+        let mut seen: Vec<&str> = skipped_manual.iter().map(String::as_str).collect();
         seen.sort_unstable();
         seen.dedup();
         for label in seen {
             let command = reach::profile()
-                .native_choosers
+                .manual_controls
                 .iter()
                 .find(|exception| label.starts_with(exception.label.as_str()))
                 .map(|exception| exception.command.as_str())
-                .unwrap_or("(unmapped - add it to native_choosers in ps-qa.ron)");
+                .unwrap_or("(unmapped manual control)");
             println!("  {label:<38} {command}");
         }
     }
@@ -3505,9 +3513,17 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        cli::Command::Click { name } => {
+        cli::Command::Click { name, id } => {
             nodes(&mut client).await?;
-            click_named(&mut client, &name).await?;
+            match (name, id) {
+                (Some(name), None) => click_named(&mut client, &name).await?,
+                (None, Some(node_id)) => {
+                    click_by_id(&mut client, node_id).await?;
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    println!("activated node {node_id}");
+                }
+                _ => unreachable!("clap requires exactly one click selector"),
+            }
         }
         cli::Command::Capture { name, scale } => {
             capture(&mut client, &name, scale as f32).await?;

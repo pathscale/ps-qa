@@ -53,7 +53,7 @@ pub fn surfaces() -> &'static [crate::app::SurfaceSpec] {
 
 /// Stands in for "the first document tab in the strip", resolved when the sweep
 /// runs because a document's own name is user data and varies per profile.
-pub const PROJECT_TAB: &str = "\u{0}project-tab";
+pub const DYNAMIC_DOCUMENT: &str = "\u{0}dynamic-document";
 
 /// A control that opens a document, either its tab or its row in a list.
 ///
@@ -64,7 +64,7 @@ pub const PROJECT_TAB: &str = "\u{0}project-tab";
 /// A row is recognised by the summary the list renders beside its name, which
 /// the application states as `document_row_markers`. Matching the document's own
 /// name is not possible: it is user data and differs per profile.
-pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
+pub fn document_opener(nodes: &[SemanticNode]) -> Option<String> {
     let closes: Vec<String> = nodes
         .iter()
         .filter(|n| n.role == "button" && onscreen(n))
@@ -213,7 +213,7 @@ fn doubled(name: &str) -> Option<&str> {
 /// somewhere else" - without a route or a title to read, neither of which the
 /// semantic tree exposes.
 pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
-    let Some(marker) = surface_marker(surface) else {
+    let Some(marker) = surface.marker.as_deref() else {
         return true;
     };
     nodes.iter().any(|n| onscreen(n) && n.name.contains(marker))
@@ -226,7 +226,7 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
 /// Both were tried against the running app and both are wrong. A retained Home
 /// sits *behind* an open project pane and its rows keep real boxes in the same
 /// horizontal band: `Items1` in the panel measured x=953 and Home's
-/// a list header at x=965, so a `PANEL_LEFT` cut cannot separate them. Worse, the
+/// a list header in the same region, so a coordinate cut cannot separate them. Worse, the
 /// retained rows still report `visible` with a non-zero box, so filtering on
 /// visibility keeps every one of them too.
 ///
@@ -241,7 +241,7 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
 /// from the marker to the pane root and then taking that root's descendants
 /// gives exactly the controls a person is looking at.
 pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64> {
-    let Some(marker) = surface_marker(surface) else {
+    let Some(marker) = surface.marker.as_deref() else {
         return nodes.iter().map(|n| n.id).collect();
     };
     let by_id: HashMap<u64, &SemanticNode> = nodes.iter().map(|n| (n.id, n)).collect();
@@ -347,17 +347,6 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
     best
 }
 
-/// The control that only this surface renders.
-fn surface_marker(surface: &Surface) -> Option<&'static str> {
-    match surface.name.as_str() {
-        "home" => Some("Cycle Home sort"),
-        "settings" => Some("Appearance"),
-        "analytics" => Some("Outcome per dollar"),
-        "project" => Some("Send"),
-        _ => None,
-    }
-}
-
 /// Whether pressing this hands control to the operating system.
 ///
 /// A native file chooser is not part of the webview: it is a modal the harness
@@ -368,7 +357,7 @@ fn surface_marker(surface: &Surface) -> Option<&'static str> {
 ///
 /// These are skipped rather than judged, and counted in their own bucket so the
 /// report never implies they passed.
-pub fn opens_native_dialog(name: &str) -> bool {
+pub fn requires_manual_release_check(name: &str) -> bool {
     /*
      * Only the controls that hand the screen to macOS.
      *
@@ -404,7 +393,7 @@ pub fn opens_native_dialog(name: &str) -> bool {
      * `scripts/button-sweep.sh` documents the manual pass.
      */
     profile()
-        .native_choosers
+        .manual_controls
         .iter()
         .any(|exception| name.starts_with(exception.label.as_str()))
 }
@@ -679,7 +668,7 @@ pub struct Coverage {
     /// Leaves the surface, so it is exercised as an opener instead.
     pub navigation: usize,
     /// Hands the screen to a native modal, so it is never pressed unattended.
-    pub native: usize,
+    pub manual: usize,
     /// Left unreachable behind a dialog that would not dismiss.
     ///
     /// Its own bucket because it is neither a pass nor a skip: these controls
@@ -720,14 +709,14 @@ impl Coverage {
             + self.hidden
             + self.vanished
             + self.navigation
-            + self.native
+            + self.manual
             + self.blocked
             + self.revealed
     }
 
     pub fn line(&self) -> String {
         format!(
-            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} native, {} blocked{}",
+            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} manual, {} blocked{}",
             self.total(),
             if self.revealed > 0 {
                 format!(" ({} on open, {} revealed)", self.in_tree, self.revealed)
@@ -739,7 +728,7 @@ impl Coverage {
             self.hidden,
             self.vanished,
             self.navigation,
-            self.native,
+            self.manual,
             self.blocked,
             if self.accounted() {
                 String::new()
@@ -858,12 +847,12 @@ mod tests {
          *   the report shows the control as swept.
          */
         let profile = crate::app::AppProfile {
-            native_choosers: vec![
-                crate::app::NativeChooser {
+            manual_controls: vec![
+                crate::app::ManualControl {
                     label: "Attach files".to_owned(),
                     command: "choose_attachments".to_owned(),
                 },
-                crate::app::NativeChooser {
+                crate::app::ManualControl {
                     label: "Open http".to_owned(),
                     command: "openExternal".to_owned(),
                 },
@@ -872,7 +861,7 @@ mod tests {
         };
         let exempt = |name: &str| {
             profile
-                .native_choosers
+                .manual_controls
                 .iter()
                 .any(|e| name.starts_with(e.label.as_str()))
         };
@@ -888,13 +877,13 @@ mod tests {
         // actionable rather than a list of bare labels.
         assert!(
             profile
-                .native_choosers
+                .manual_controls
                 .iter()
                 .all(|e| !e.command.is_empty())
         );
 
         // An application that names none exempts nothing.
-        assert!(crate::app::AppProfile::default().native_choosers.is_empty());
+        assert!(crate::app::AppProfile::default().manual_controls.is_empty());
     }
 
     #[test]
@@ -1001,7 +990,7 @@ mod tests {
             hidden: 1,
             vanished: 1,
             navigation: 1,
-            native: 1,
+            manual: 1,
             blocked: 1,
             revealed: 0,
         };
