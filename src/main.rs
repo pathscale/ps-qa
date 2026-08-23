@@ -2450,8 +2450,12 @@ async fn hover_all_rows(client: &mut Client) -> Result<usize> {
         })
         .unwrap_or((0.0, 4000.0));
     let mut revealed = 0;
-    for (_id, point) in reach::hover_points(&tree.nodes, "listitem", window) {
-        if hover_over(client, &point).await.is_ok() {
+    for node_id in reach::hover_row_ids(&tree.nodes, "listitem", window) {
+        if client
+            .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+            .await
+            .is_ok()
+        {
             revealed += 1;
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
