@@ -2056,29 +2056,11 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
 
 /// `click_named` without the metrics report, for the QA runner's inner loop.
 async fn click_named_quiet(client: &mut Client, want: &str) -> Result<()> {
-    let (snapshot, _) = inspect(client).await?;
-    let wanted = want.to_lowercase();
-    let Some(target) = snapshot
-        .nodes
-        .iter()
-        .find(|node| node.name.to_lowercase().contains(&wanted) && node.visible && node.enabled)
-    else {
-        bail!("no visible, enabled node matching it");
-    };
-    let target_id = target.id;
-    // Off-screen controls get scrolled to first: a click at a point nothing is
-    // at dispatches a `pointerdown` and no click, which reads as a dead button.
-    if target
-        .bounds
-        .is_some_and(|b| b[1] + b[3] < 0.0 || b[0] + b[2] < 0.0 || b[1] > 4000.0)
-    {
-        client
-            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                node_id: target_id,
-            }))
-            .await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
+    // Resolve through the same painted, on-screen button path as navigation.
+    // `visible` alone is insufficient: retained subtrees can expose an old
+    // semantic node at 0x0, and activating that id reports a working control
+    // dead while its current painted replacement remains untouched.
+    let (target_id, _) = locate_button(client, want).await?;
     client
         .agent(&AgentControlRequest::Act(AgentAction::Click {
             node_id: target_id,
