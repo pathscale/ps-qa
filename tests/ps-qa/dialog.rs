@@ -62,6 +62,3 @@ pub fn checks() -> Vec<Check> {
         },
     ]
 }
-
-pub const PANEL_LEFT: f64 = 900.0;
-

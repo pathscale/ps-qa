@@ -1,0 +1,50 @@
+name: CI
+
+# The unit tests only. Running the *checks* needs a live application with a
+# window server, which lives in the app's own repository as a manually
+# triggered job (`qa-panel.yml` in agencyzero), because it needs macOS and
+# minutes. `cargo test` here is the engine: the coverage arithmetic, the
+# reach rules, the sweep's verdicts.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      # The checks are data compiled into the binary, so a malformed one is a
+      # compile error already. `list` proves they also *load*: it walks every
+      # check and prints it without needing an app, which is the cheapest
+      # possible guard against a group that silently stopped being registered.
+      - name: The checks load
+        run: |
+          cargo run --release -- list | tee /tmp/list.txt
+          grep -qE '[0-9]+ checks in [0-9]+ groups' /tmp/list.txt

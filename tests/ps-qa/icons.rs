@@ -28,4 +28,3 @@ pub fn checks() -> Vec<Check> {
         },
     ]
 }
-

@@ -11,20 +11,18 @@
 use crate::qa::{Check, Expect};
 
 pub fn checks() -> Vec<Check> {
-    vec![
-        Check {
-            id: "delete-asks-first",
-            group: "delete",
-            what: "deleting a project asks before it removes anything",
-            open: Some("Home"),
-            hover: None,
-            click: Some("Delete e756"),
-            press: true,
-            // The confirmation appears *in* the row, so the row's own name
-            // grows the prompt. Absence of that is a delete that fired.
-            subject: "Delete?",
-            expect: Expect::Paints,
-            panel_only: false,
-        },
-    ]
+    vec![Check {
+        id: "delete-asks-first",
+        group: "delete",
+        what: "deleting a project asks before it removes anything",
+        open: Some("Home"),
+        hover: None,
+        click: Some("Delete e756"),
+        press: true,
+        // The confirmation appears *in* the row, so the row's own name
+        // grows the prompt. Absence of that is a delete that fired.
+        subject: "Delete?",
+        expect: Expect::Paints,
+        panel_only: false,
+    }]
 }

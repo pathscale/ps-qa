@@ -66,6 +66,36 @@ pub fn checks() -> Vec<Check> {
             press: false,
             panel_only: true,
         },
+        /*
+         * The row controls do not hide, and the three checks above never said so.
+         *
+         * `hover-1` through `hover-3` ask whether *a* node with that name has a
+         * box. Written as `PaintsMore` instead - strictly more painting after
+         * the hover than before - the same subject reports `13 -> 13`, and a
+         * direct reading confirms it: 13 of the 19 `Edit ` controls in the tree
+         * already paint with the pointer parked away from every row.
+         *
+         * So the panel renders its row actions unconditionally, and the three
+         * checks pass on controls that were there the whole time. They would
+         * pass if hover were removed entirely. That is worth one check saying
+         * out loud, because the group is *named* `hover` and reads as coverage
+         * of a reveal that is not happening.
+         *
+         * `Holds` is what is actually true today. If the panel ever moves to
+         * hover-gated controls this goes red, which is the correct direction to
+         * fail: it means the three above have started testing something.
+         */
+        Check {
+            id: "hover-does-not-gate-row-controls",
+            group: "hover",
+            what: "row controls paint whether or not the row is hovered",
+            open: Some("theta theta north indi"),
+            hover: Some("Change the status of"),
+            click: None,
+            subject: "Edit ",
+            expect: Expect::Holds,
+            press: false,
+            panel_only: true,
+        },
     ]
 }
-

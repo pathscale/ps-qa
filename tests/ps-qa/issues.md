@@ -25,8 +25,8 @@ date rather than trusting a row.
 | --- | --- |
 | Controls on the four surfaces as they open | **297** |
 | Plus controls that only exist once something is opened | 48 |
-| Controls a check asserts an outcome for | **18** (5%) |
-| Checks passing | **16 of 18** |
+| Controls a check asserts an outcome for | **19** (6%) |
+| Checks passing | **17 of 19** |
 | Controls pressed, asserted only as "something changed" | 118 |
 | Controls never driven at all | **173** |
 
@@ -51,6 +51,7 @@ Green means the assertion held on the run above, on a fresh profile.
 | `hover-1` | hover | hovering a row reveals move-up | **pass** |
 | `hover-2` | hover | hovering a row reveals edit | **pass** |
 | `hover-3` | hover | hovering a row reveals delete | **pass** |
+| `hover-does-not-gate-row-controls` | hover | row controls paint hovered or not | **pass** |
 | `status-1` | status | a status click does not remove the row | **FAIL** |
 | `status-2` | status | the marker never cycles into a terminal state | **pass** |
 | `sections-1` | sections | the Items header is on screen | **pass** |
@@ -65,6 +66,26 @@ Green means the assertion held on the run above, on a fresh profile.
 | `dialog-opens` | dialog | the fork dialog opens | **pass** |
 | `dialog-cancel-dismisses` | dialog | Cancel actually dismisses it | **pass** |
 | `delete-asks-first` | delete | delete asks before destroying | **pass** |
+
+### The `hover` group does not test hover
+
+Measured 2026-08-23: **13 of the 19 `Edit ` controls in the tree already paint
+with the pointer parked away from every row.** Asked as a delta rather than as
+presence, the same subject reports `13 -> 13`.
+
+So `hover-1`, `hover-2` and `hover-3` pass on controls that were on screen the
+whole time. They would pass if hover were removed from the application
+entirely. Three of the nineteen checks are named for a behaviour they do not
+exercise, which is worse than having no check: the group's name reads as
+coverage.
+
+`hover-does-not-gate-row-controls` now asserts what is actually true, with
+`Holds`. If the panel ever moves to hover-gated controls it goes red, which is
+the right direction to fail - it would mean the three above had started testing
+something.
+
+Not counted as a failure below because nothing is broken. It is a coverage
+claim that was never real.
 
 ### The two failures
 
