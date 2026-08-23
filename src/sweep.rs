@@ -13,7 +13,7 @@
 //!
 //! # What an expectation is
 //!
-//! Every button claims something in its accessible name. `Collapse Items` says
+//! Every button claims something in its accessible name. `Collapse Records` says
 //! a section will collapse; `Delete X` says a row will disappear; `Close X` says
 //! a tab will go. Each of those is a statement about the tree *after* the click,
 //! and the tree is readable, so each is checkable without knowing anything about

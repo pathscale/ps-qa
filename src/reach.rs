@@ -190,8 +190,8 @@ pub fn interactive(node: &SemanticNode) -> bool {
 
 /// Whether pressing this leaves the surface, invalidating the rest of the plan.
 ///
-/// The first repeatable run planned 173 buttons, pressed `Home` as the first of
-/// them, and lost the other 169: they were all on the surface it had just
+/// A sweep that presses a navigation control first loses the rest of its plan:
+/// every remaining control belongs to the surface it just
 /// navigated away from. A control that changes surface has to be swept last, or
 /// it takes the plan with it.
 ///
@@ -201,16 +201,15 @@ pub fn interactive(node: &SemanticNode) -> bool {
 /// failure this whole module exists to end.
 pub fn navigates(name: &str) -> bool {
     // The application's own permanent tabs. `is_permanent` accepts the doubled
-    // form the strip renders ("HomeHome"), which an exact match would miss and a
-    // `contains` would over-match into "Close Home".
+    // doubled form some strips render, which an exact match would miss and a
+    // substring match would over-match into a close action.
     if profile().is_permanent(name) {
         return true;
     }
     /*
      * A tab in the strip, whose label the strip doubles.
      *
-     * These are the controls that cost the sweep Home: clicking `ee` switched
-     * to that project's pane, and Home's 160 remaining controls went to
+     * Clicking a document tab switches panes, and the root surface's remaining controls go to
      * `visible=false` while staying in the retained DOM. They were reported as
      * vanished when the sweep had simply walked off the surface.
      *
@@ -222,7 +221,7 @@ pub fn navigates(name: &str) -> bool {
 
 /// The single label behind a doubled tab-strip name, if it is one.
 ///
-/// `"ee"` -> `"e"`, `"HomeHome"` -> `"Home"`. An odd length or a mismatched
+/// `"ee"` -> `"e"`, `"DashboardDashboard"` -> `"Dashboard"`. An odd length or a mismatched
 /// half is not a tab.
 fn doubled(name: &str) -> Option<&str> {
     if name.is_empty() || !name.len().is_multiple_of(2) {
@@ -249,18 +248,15 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
 ///
 /// # Why not position, and not visibility
 ///
-/// Both were tried against the running app and both are wrong. A retained Home
-/// sits *behind* an open project pane and its rows keep real boxes in the same
-/// horizontal band: `Items1` in the panel measured x=953 and Home's
-/// a list header in the same region, so a coordinate cut cannot separate them. Worse, the
+/// Both were tried against a running app and both are wrong. A retained root
+/// sits behind an open document pane and its rows keep real boxes in the same
+/// horizontal band as panel controls, so a coordinate cut cannot separate them. Worse, the
 /// retained rows still report `visible` with a non-zero box, so filtering on
 /// visibility keeps every one of them too.
 ///
-/// The consequence was not a small error. Home's ~160 row controls were swept
-/// as though they were the project panel's, the panel's own controls were
-/// crowded out of the plan, and users - who reports the side panels as
-/// where most problems are - was reading coverage numbers for the wrong
-/// surface.
+/// The consequence is not a small error: one surface's row controls can be swept
+/// as though they belonged to another, crowding the actual controls out of the
+/// plan and reporting coverage for the wrong surface.
 ///
 /// Ancestry is the one thing that does separate them: a pane is a subtree, and
 /// the marker control that identifies a surface lives inside it. Walking up
@@ -291,9 +287,8 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
     /*
      * The shallowest ancestor that holds most of what is on screen.
      *
-     * A fixed climb cannot work for every surface: eight levels from Home's
-     * sort control landed above its list and returned nothing at all, while the
-     * same depth from a project's `Send` was right. So the depth is chosen by
+     * A fixed climb cannot work for every surface: the same depth can land above
+     * one list and correctly identify another pane. So the depth is chosen by
      * measurement - climb one level at a time and keep the first ancestor whose
      * subtree covers a majority of the on-screen controls. That is the pane,
      * whichever surface it belongs to, and it stops before the window root,
@@ -309,7 +304,7 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
      * The per-node climb needed a hop limit to stay bounded, and any limit is
      * wrong: this tree runs to 8317 nodes and a project row sits deeper than
      * thirty-two ancestors, so the cap silently dropped exactly the controls
-     * the sweep exists to press and Home reported zero buttons. Walking down
+     * the sweep exists to press and the surface reports zero buttons. Walking down
      * from the root visits each node once and has no depth to guess at.
      */
     let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -337,8 +332,8 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
      * A majority test looks reasonable and fails exactly when it matters: after
      * a full run the window holds several retained panes, no single ancestor
      * reaches half the on-screen buttons, the loop exhausts, and it returns
-     * whatever the last ancestor happened to be. Home reported zero buttons
-     * that way while sweeping it alone found 145 - a coverage hole that only
+     * whatever the last ancestor happened to be. A surface can report zero
+     * buttons that way while finding many when swept alone, a coverage hole that only
      * appeared in the run that was supposed to cover everything.
      *
      * Taking the maximum has no threshold to be wrong about. The climb stops
@@ -462,10 +457,8 @@ pub fn dismissers(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
 
 /// Whether this closes a surface the sweep still has to stand on.
 ///
-/// `Close Settings` retires the tab that every later surface is reached
-/// through, so pressing it early cost the run its own subject: Home planned 20
-/// controls against a window that had 196 on screen, because the sweep was no
-/// longer where it thought it was.
+/// Closing a navigation tab can retire the surface later routes depend on, so
+/// such controls run after the plan that stands on them.
 ///
 /// The tab is still exercised - `Close` on a project tab is swept - but the
 /// three permanent surfaces keep theirs.
@@ -474,9 +467,8 @@ pub fn closes_a_surface(name: &str) -> bool {
      * Every `Close` in the strip, not a fixed list of three.
      *
      * A project tab's close was left in the sweep on the grounds that it is an
-     * ordinary control - but closing a project tab falls the window back to
-     * Home, retires the pane later surfaces are reached through, and in a full
-     * run left Home reporting zero buttons where sweeping it alone finds 145.
+     * ordinary control, but closing a document tab can fall the window back to
+     * the root and retire a pane later surfaces are reached through.
      * The close controls are worth pressing; they are not worth pressing in the
      * middle of a plan that stands on what they remove.
      */
@@ -515,9 +507,8 @@ pub fn requires_isolated_outcome(name: &str) -> bool {
 /// A modal does not remove the surface behind it: that surface stays in the
 /// tree, `visible` and sized, the same way a retained pane does. So "everything
 /// on screen" is not "everything in the dialog", and sweeping the former made
-/// one dialog's pass press `HomeHome`, `Settings` and `Attach files` -
-/// controls that are not in the dialog at all, one of which raises a macOS
-/// panel onto the user's screen.
+/// a dialog pass can press retained-surface controls that are not in the dialog
+/// at all, including a native-panel opener.
 ///
 /// Found by climbing from the dismiss control until the subtree stops growing
 /// quickly, which is the dialog's own container: a modal is a small, self
@@ -570,15 +561,12 @@ pub fn enclosing_dialog(nodes: &[SemanticNode], dismiss_id: u64) -> Vec<u64> {
 
 /// Whether this is a panel section header, which folds the rows beneath it.
 ///
-/// The panel's headers are named for their contents and count - `Items1`,
-/// `Items0`, `Log22` - not "Collapse Items", so a
-/// name-prefix rule for disclosures misses every one of them. Pressing `Items1`
-/// folds the section, and with it `Fork <item> into a fresh chat`, `Change the
-/// status of ...`, `Edit the description for ...` and `New item`.
+/// Some panel headers are named for their contents and count, such as
+/// `Records1` or `Activity22`, rather than with a collapse prefix. A prefix-only
+/// rule misses those disclosures and folds their descendant row controls early.
 ///
-/// That is precisely how one dialog escaped the audit: the sweep folded
-/// the Items section a dozen controls before it reached the rows, so every
-/// per-item control read as vanished and the dialog was never opened.
+/// Deferring configured section headers prevents descendant controls from
+/// reading as vanished before the sweep reaches them.
 pub fn folds_a_section(name: &str) -> bool {
     /*
      * Read from the application's own profile, falling back to nothing.
@@ -628,8 +616,7 @@ pub fn profile() -> &'static crate::app::AppProfile {
 /// The disclosure controls that must be opened before a sweep of this surface.
 ///
 /// Collapsed sections are the second-largest source of unreached controls after
-/// the wrong surface: `Items` alone hides a row of controls per item, and the
-/// QA profile carries twenty-three of them.
+/// the wrong surface: one section alone may hide a row of controls per record.
 pub fn expanders(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
     nodes
         .iter()
@@ -816,7 +803,7 @@ mod tests {
     #[test]
     fn only_onscreen_expanders_are_offered() {
         let nodes = vec![
-            node(1, "button", "Expand Items", Some([0.0, 0.0, 20.0, 20.0])),
+            node(1, "button", "Expand Records", Some([0.0, 0.0, 20.0, 20.0])),
             node(2, "button", "Expand Hidden", Some([0.0; 4])),
             node(
                 3,
@@ -827,7 +814,7 @@ mod tests {
         ];
         let found = expanders(&nodes);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].1, "Expand Items");
+        assert_eq!(found[0].1, "Expand Records");
     }
 
     #[test]
@@ -840,18 +827,16 @@ mod tests {
          * surfaces. The permanent-tab half is the application's to state, and
          * is covered by `a_permanent_surface_is_recognised_doubled` in `app`.
          *
-         * This test used to assert `navigates("Home")` directly, which was this
-         * module knowing one application's tab names.
+         * Permanent-tab names belong to an application profile, not this test.
          */
-        // Project tabs are doubled, and clicking one leaves the surface: this
-        // is what cost Home 160 controls in a run.
+        // Document tabs are doubled, and clicking one leaves the surface.
         assert!(navigates("ee"));
         assert!(navigates("delta/east/cobaltdelta/east/cobalt"));
         // A `contains` would catch these, and dropping a Close from the sweep
         // is the silent skip this module exists to end.
-        assert!(!navigates("Close Home"));
-        assert!(!navigates("Add dir"));
-        assert!(!navigates("Rename project"));
+        assert!(!navigates("Close Dashboard"));
+        assert!(!navigates("Import data"));
+        assert!(!navigates("Rename document"));
         // Not every even-length name is a doubled label.
         assert!(!navigates("Send"));
         assert!(!navigates("Copy"));
@@ -889,8 +874,8 @@ mod tests {
         let profile = crate::app::AppProfile {
             manual_controls: vec![
                 crate::app::ManualControl {
-                    label: "Attach files".to_owned(),
-                    command: "choose_attachments".to_owned(),
+                    label: "Import data".to_owned(),
+                    command: "open_native_picker".to_owned(),
                 },
                 crate::app::ManualControl {
                     label: "Open http".to_owned(),
@@ -905,13 +890,13 @@ mod tests {
                 .iter()
                 .any(|e| name.starts_with(e.label.as_str()))
         };
-        assert!(exempt("Attach files"));
+        assert!(exempt("Import data"));
         // A prefix, so a label that carries its subject still matches.
         assert!(exempt("Open https://example.invalid/pull/1"));
         // Ordinary controls are still swept.
         assert!(!exempt("Send"));
         assert!(!exempt("Cancel"));
-        assert!(!exempt("New item"));
+        assert!(!exempt("Create record"));
 
         // Every exception names what it opens, so the printed worklist is
         // actionable rather than a list of bare labels.

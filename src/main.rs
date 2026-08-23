@@ -339,7 +339,7 @@ async fn transcript(client: &mut Client) -> Result<()> {
                 == reach::profile().transcript_region.as_deref()
         })
         .and_then(|node| node.get("id").and_then(|value| value.as_u64()))
-        .ok_or_else(|| eyre::eyre!("no Conversation node"))?;
+        .ok_or_else(|| eyre::eyre!("configured transcript region is absent"))?;
     let parent: HashMap<u64, Option<u64>> = nodes
         .iter()
         .filter_map(|node| {
@@ -371,7 +371,7 @@ async fn transcript(client: &mut Client) -> Result<()> {
         .collect();
     let conversation_row = layout
         .get(&conversation)
-        .ok_or_else(|| eyre::eyre!("Conversation has no layout row"))?;
+        .ok_or_else(|| eyre::eyre!("configured transcript region has no layout row"))?;
     let pair = |row: &serde_json::Value, field: &str, index: usize| {
         row.get(field)
             .and_then(|value| value.get(index))
@@ -380,11 +380,11 @@ async fn transcript(client: &mut Client) -> Result<()> {
     };
     let bounds = conversation_row
         .get("bounds")
-        .ok_or_else(|| eyre::eyre!("Conversation has no bounds"))?;
+        .ok_or_else(|| eyre::eyre!("configured transcript region has no bounds"))?;
     let viewport_bottom = bounds.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
         + bounds.get(3).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
     println!(
-        "Conversation id={conversation} top={:.1} bottom={viewport_bottom:.1} scrollTop={:.1} max={:.1} clientHeight={:.1} scrollHeight={:.1} gapToMax={:.1}",
+        "transcript id={conversation} top={:.1} bottom={viewport_bottom:.1} scrollTop={:.1} max={:.1} clientHeight={:.1} scrollHeight={:.1} gapToMax={:.1}",
         bounds.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN),
         pair(conversation_row, "scrollOffset", 1),
         pair(conversation_row, "scrollRange", 1),
@@ -974,7 +974,7 @@ async fn panes(client: &mut Client) -> Result<()> {
 async fn hover_over(client: &mut Client, want: &str) -> Result<bool> {
     // "x,y" targets a point directly. A scroll container often has no
     // accessible name, so naming is not always enough to put the pointer inside
-    // the thing you mean to scroll: aiming at "Settings" found a button in the
+    // the thing you mean to scroll: a repeated label can find a button in the
     // sidebar and every wheel event went there.
     if let Some((x, y)) = want.split_once(',')
         && let (Ok(x), Ok(y)) = (x.trim().parse::<f64>(), y.trim().parse::<f64>())
@@ -1392,8 +1392,8 @@ async fn run_qa(
             /*
              * "Already there" is judged by the *click target*, not the subject.
              *
-             * Judged by the subject, a check whose subject is `Items` decided
-             * it had arrived because Home renders that word too, skipped the
+             * Judged by the subject, a check can decide it arrived because a
+             * different surface renders the same word, skip the
              * navigation, and then could not find the control it was about.
              * The control the check is going to drive is the honest test of
              * whether the surface is in front.
@@ -1407,20 +1407,19 @@ async fn run_qa(
                 /*
                  * Two steps, because the opener may not be on this surface.
                  *
-                 * A project is opened from a Home row, and once the project is
-                 * in front that row is gone - so a check that navigates by it
+                 * A document can be opened from a root-surface row, and once
+                 * the document is in front that row is gone, so a check that navigates by it
                  * failed with "no visible, enabled, sized button" for a
-                 * surface that was one press away. Going to Home first is a
-                 * no-op when already there, and `Home` is always in the tab
-                 * strip.
+                 * surface that was one press away. The configured root opener
+                 * provides the recovery path.
                  */
                 /*
                  * A tab is pressed, a row is double clicked, and which one
                  * this is cannot be known from the name - so try the cheap
                  * gesture first and escalate.
                  *
-                 * Double clicking a tab strip entry toggles it rather than
-                 * navigating, and single-pressing a Home row folds it, so
+                 * Double clicking a tab-strip entry may toggle it rather than
+                 * navigating, while a single row click may fold it, so
                  * committing to either gesture broke the other set of checks.
                  */
                 let _ = click_named_quiet(client, want).await;
@@ -1447,8 +1446,8 @@ async fn run_qa(
         // Hover first: the row actions do not exist until `pointerenter`.
         //
         // Aimed at a node inside the panel column, not merely one whose name
-        // matches. Home renders the same control names, so hovering by name
-        // alone landed on Home's list and reported the panel's arrows missing.
+        // matches. Another retained surface may render the same control names,
+        // so hovering by name alone can land in the wrong list.
         if let Some(want) = check.hover.as_deref() {
             let (tree, _) = inspect(client).await?;
             let target = tree
@@ -1916,9 +1915,9 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
      *
      * Taking the first match in tree order and then asking whether it is
      * on-screen is wrong when a name matches more than once, which is normal: a
-     * project appears in the tab strip, in the Home list and in its own header.
-     * Doing that reported "Home" unreachable while a perfectly pressable Home
-     * button sat at x=139, because an overflowed copy came first in the tree.
+     * document appears in the tab strip, in the root list and in its own header.
+     * Doing that can report the root unreachable while a pressable copy is on
+     * screen because an overflowed copy came first in the tree.
      */
     let pick = |snapshot: &AgentSnapshot, viewport: (f64, f64)| -> Option<(u64, [f64; 4])> {
         let modal_scope: HashSet<u64> = reach::dismissers(&snapshot.nodes)
@@ -2039,7 +2038,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
 
 /// Double click the first visible match, for reaching a surface.
 ///
-/// A Home row folds on a single click and opens on a double, and two separate
+/// A document row may fold on a single click and open on a double; two separate
 /// `press` calls are not a double click: each round-trips through the
 /// inspector, so they land hundreds of milliseconds apart and the row folds
 /// there and back. Navigation that used single presses appeared to work only
@@ -2277,8 +2276,8 @@ async fn run_audit(client: &mut Client, family: Option<&str>) -> Result<usize> {
     /*
      * The viewport, read from the tree rather than assumed.
      *
-     * A control below the fold is clipped, not broken. The panel's own Settings
-     * and Notes headers sit at y=939 in a 900px window and draw perfectly once
+     * A control below the fold is clipped, not broken. Lower section headers
+     * can sit outside a short window and draw perfectly once
      * scrolled to, so a hardcoded bound reported them as faults. Reading the
      * `main` box also keeps this right when the window is resized.
      */
@@ -2515,7 +2514,7 @@ async fn run_sweep(client: &mut Client, family: Option<&str>) -> Result<usize> {
 /// Open every collapsed section on the current surface.
 ///
 /// Repeated until nothing more opens, because expanding one section reveals
-/// disclosure controls inside it: `Items` holds a row per item and each row has
+/// disclosure controls inside it: a collection may hold a row per record, each with
 /// its own. A single pass stops one level short of the controls that matter.
 async fn expand_everything(client: &mut Client, surface: &reach::Surface) -> Result<usize> {
     let mut opened = 0;
@@ -2831,17 +2830,17 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     if surface.opener.is_empty() {
         return Ok(true);
     }
-    // The project surface has no fixed name to aim at: the profile is scrubbed,
+    // A dynamic document surface has no fixed name to aim at: the profile may be scrubbed,
     // so the tab is found by shape (a tab is the button whose `Close` twin the
     // strip renders beside it) rather than by a string that would differ per
     // profile.
     let opener = if surface.opener == reach::DYNAMIC_DOCUMENT {
         /*
-         * Via Home, because that is the only surface a project can be opened
-         * from on a fresh profile.
+         * Via the configured root surface, because that is where a dynamic
+         * document can be opened from on a fresh profile.
          *
          * The strip holds no project tab until one has been opened, and the
-         * sweep reaches `project` while standing on Analytics, where there is
+         * sweep may reach the document while standing on another surface, where there is
          * no row to press either. Looking from where we happen to be found
          * nothing every time and the pane went unswept on exactly the runs that
          * matter. Cheap when a tab already exists: the lookup prefers it.
@@ -2864,18 +2863,13 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     /*
      * Confirmed by looking, not assumed from the click succeeding.
      *
-     * A dispatched click is not a navigation: after sweeping Settings the run
-     * pressed `Analytics`, got an acknowledgement, stayed exactly where it was,
-     * and then swept Settings' controls a second time and filed them under
-     * "analytics". Three surfaces reported on one screen and the report looked
-     * completely ordinary.
+     * A dispatched click is not proof of navigation: a control can acknowledge
+     * activation while the current surface remains unchanged. Always confirm
+     * the destination marker before attributing controls to that surface.
      */
     /*
-     * A project row opens on double click, not single.
-     *
-     * `HomeTab.tsx:1327` says it outright: "Single click folds, double click
-     * opens the tab". A tab already in the strip is an ordinary single click,
-     * so only the Home-row path needs the gesture.
+     * A dynamic document row uses the profile contract's double-click gesture;
+     * a fixed surface opener uses an ordinary semantic click.
      */
     if surface.opener == reach::DYNAMIC_DOCUMENT {
         /*
@@ -2918,7 +2912,7 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     if settle_on(client, surface).await? {
         return Ok(true);
     }
-    // One retry through Home, which every surface can be reached from even when
+    // One retry through the configured root, which can recover when
     // a modal on the current one is swallowing the direct hop.
     // Not for the project surface: its opener is a gesture, and repeating it as
     // a single click would fold the row rather than open it.
@@ -2964,10 +2958,9 @@ async fn sweep_modal(
      *
      * A modal leaves the surface behind it in the tree, still `visible` and
      * still sized, exactly as a retained pane does. Sweeping everything on
-     * screen meant the fork dialog's pass pressed `HomeHome`, `Settings`,
-     * `Attach files` and the whole composer - none of which are in the dialog,
-     * and one of which raises a macOS panel that then sits on the user's
-     * screen. The subtree that holds the dismiss control is the dialog.
+     * screen can press retained-surface controls that are not in the dialog,
+     * including a native-panel opener. The subtree that holds the dismiss
+     * control is the dialog.
      */
     let scope = dismiss_ids
         .first()
@@ -3134,9 +3127,8 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
          *
          * `expand_everything` pressed every `Expand *` in the window, including
          * ones belonging to retained panes behind this one. Twelve such presses
-         * ran before Home's plan was built, the last of them navigated away,
-         * and Home then reported zero buttons in a full run while sweeping it
-         * alone found 145.
+         * can run before the current surface's plan is built, navigate away,
+         * and leave that surface reporting zero buttons in a full run.
          */
         let opened = expand_everything(client, surface).await?;
         if !open_surface(client, surface).await? {
@@ -3149,8 +3141,8 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
          * This surface's buttons, not the whole window's.
          *
          * A retained pane keeps its entire subtree alive and merely hidden, so
-         * standing on Settings the tree still holds every one of Home's 157
-         * buttons. Counting those here charged each surface for the ones it was
+         * standing on one surface the tree can still hold every button from a
+         * retained peer. Counting those here charges each surface for controls it was
          * not looking at: four surfaces reported 1106 buttons between them for
          * a window that has nowhere near that many, with 900 of them "hidden"
          * and the real coverage number buried.
@@ -3163,12 +3155,11 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         /*
          * Scoped by ancestry to the pane in front.
          *
-         * A retained Home keeps real, `visible`, correctly-sized boxes behind an
-         * open project pane, in the same horizontal band as the panel, so
+         * A retained surface can keep real, `visible`, correctly-sized boxes behind an
+         * open document pane, in the same horizontal band, so
          * neither position nor visibility separates them. Sweeping the union
-         * meant Home's ~160 row controls were pressed under the project
-         * surface's name while the panel's own controls were crowded out of the
-         * plan - and the side panels are where users report most problems.
+         * means another surface's row controls are pressed under the current
+         * surface's name while its own controls are crowded out of the plan.
          */
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
@@ -3227,21 +3218,18 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                  * A collapse closes the section its neighbours live in, and
                  * every control underneath goes to `visible=false` at the
                  * section's own origin. Pressing `Collapse Recent` first took
-                 * 160 of Home's 173 controls off screen and the run charged
+                 * most controls on the surface off screen and the run charged
                  * them all as vanished, which read as the app losing its
                  * buttons rather than the sweep hiding them.
                  *
-                 * `New project` is here for the same reason from the other
-                 * direction: it opens the project it creates, so pressing it
-                 * early walks the sweep off Home. It is still pressed, once
+                 * A configured document-creation control belongs here for the
+                 * opposite reason: it opens what it creates, so pressing it
+                 * early walks the sweep off its surface. It is still pressed after
                  * the rest of the surface is done.
                  *
-                 * `Hide the project sidebar` hides the entire side panel, and
-                 * with it every per-item control: `Fork <item> into a fresh
-                 * chat`, `New item`, `Save`, `Forget`, `Add dir` all read as
-                 * vanished after it. That is how the fork dialog went untested
-                 * for the whole audit - the sweep hid the panel before it ever
-                 * reached the rows.
+                 * A configured fold control can hide an entire side panel and
+                 * every row action beneath it. Deferring fold controls keeps
+                 * those descendants in the sweep plan.
                  */
                 collapsers.push((node.id, node.name.clone()));
             } else if reach::navigates(&node.name) {
@@ -3259,11 +3247,9 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                  * Swept, but after everything that stands on the tab it
                  * removes.
                  *
-                 * Closing any tab falls the window back to Home and retires a
-                 * pane later surfaces are reached through: in a full run this
-                 * left Home reporting zero buttons where sweeping it alone
-                 * finds 145. Deferred rather than skipped, so the control is
-                 * still pressed.
+                 * Closing a tab can fall back to the root and retire a pane
+                 * later surfaces are reached through. It is deferred rather
+                 * than skipped, so the control is still pressed.
                  */
                 closers.push((node.id, node.name.clone()));
             } else {
@@ -3322,10 +3308,10 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
              * By id while it is still on screen, otherwise by name.
              *
              * Ids do not survive a re-render, and re-renders are ordinary here:
-             * `Cycle Home sort` reorders the list and every row comes back with
+             * A sort control can reorder the list and every row can return with
              * a fresh id, the old ones retained as hidden 0x0 nodes at the
              * container's origin. Trusting the planned id after that pressed
-             * nothing and charged 160 of Home's 173 controls as "vanished"
+             * nothing and charge the remaining controls as "vanished"
              * while all of them were on screen the whole time.
              *
              * Names are not unique - 161 on-screen buttons share 81 names, with
@@ -3795,10 +3781,9 @@ async fn main() -> Result<()> {
                     ghosts.len()
                 );
                 // Retention is deliberate, so some ghosts are the design rather
-                // than a leak: `RETAINED_PROJECT_LIMIT` keeps Home, Settings and
-                // two project panes mounted-but-hidden on purpose. A healthy app
-                // measures 58. Failing on any ghost at all therefore fails on a
-                // correct build, which is why this reported and never guarded.
+                // than a leak: an application may deliberately retain a bounded
+                // number of mounted-but-hidden panes. Failing on any ghost at
+                // all therefore rejects valid retention policies.
                 //
                 // What a leak looks like: the 2026-08-20 window that painted one
                 // flat colour and took no clicks measured 2,404 ghosts on a
@@ -4083,11 +4068,11 @@ mod tests {
     #[test]
     fn inventory_categories_are_mutually_exclusive() {
         assert_eq!(
-            inventory_class(&component("Attach files", true, true), true, false),
+            inventory_class(&component("Import data", true, true), true, false),
             InventoryClass::Manual
         );
         assert_eq!(
-            inventory_class(&component("Restart", true, true), false, true),
+            inventory_class(&component("Restart application", true, true), false, true),
             InventoryClass::Isolated
         );
         assert_eq!(

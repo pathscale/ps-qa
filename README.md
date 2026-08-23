@@ -118,12 +118,12 @@ A check is a precondition, an action, and an assertion about the state after it:
 
 ```ron
 (
-    id: "dialog-cancel-dismisses",
+    id: "confirmation-cancel-dismisses",
     group: "dialog",
-    what: "the fork dialog's Cancel actually dismisses it",
+    what: "the confirmation dialog's Cancel actually dismisses it",
     hover: None,
     click: Some("Cancel"),
-    subject: "Start fork",
+    subject: "Confirm operation",
     expect: Vanishes,
 )
 ```

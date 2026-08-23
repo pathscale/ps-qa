@@ -2,8 +2,8 @@
 //!
 //! # Why this exists
 //!
-//! `ps-qa` is a harness, not a test suite. Playwright does not know what a
-//! "Task log" is, and neither should this: an application's surface names, its
+//! `ps-qa` is a harness, not a test suite. A browser driver does not know what
+//! an application's activity panel is, and neither should this: surface names,
 //! collapsible sections, the region its transcript scrolls inside, are facts
 //! about *that* application and belong with it.
 //!
@@ -23,21 +23,21 @@
 //! ```ron
 //! AppProfile(
 //!     surfaces: [
-//!         (name: "settings", opener: "Settings"),
-//!         (name: "home",     opener: "Home"),
+//!         (name: "preferences", opener: "Preferences"),
+//!         (name: "dashboard",   opener: "Dashboard"),
 //!     ],
-//!     permanent_surfaces: ["Home", "Settings"],
-//!     sections: ["Items", "Log"],
+//!     permanent_surfaces: ["Dashboard", "Preferences"],
+//!     sections: ["Records", "Activity"],
 //!     document_row_markers: [" open \u{b7} "],
 //!     close_prefixes: ["Close "],
 //!     dismiss_controls: ["Leave dialog"],
 //!     row_action_prefixes: ["Rename "],
 //!     fold_prefixes: ["Collapse ", "Hide "],
 //!     deferred_controls: ["Start setup"],
-//!     isolated_controls: ["Restart"],
+//!     isolated_controls: ["Restart application"],
 //!     inert_controls: ["Synchronize"],
-//!     transcript_region: Some("Conversation"),
-//!     home_opener: Some("Home"),
+//!     transcript_region: Some("Message history"),
+//!     home_opener: Some("Dashboard"),
 //! )
 //! ```
 //!
@@ -91,7 +91,7 @@ pub struct AppProfile {
     ///
     /// Used to tell a permanent surface from an opened one when reading the tab
     /// strip. Some applications double a tab's label in its accessible name
-    /// (`HomeHome`), so both forms are accepted.
+    /// (`DashboardDashboard`), so both forms are accepted.
     pub permanent_surfaces: Vec<String>,
     /// Collapsible section headers, by their label without the count.
     ///
@@ -212,8 +212,8 @@ impl AppProfile {
     /// Whether a name is a section header, with or without its count.
     ///
     /// The header carries a count, so what follows the label must be a number
-    /// or nothing: `Items` matches, `Items1` matches, and `Item sort between
-    /// status and time` does not.
+    /// or nothing: `Records` matches, `Records1` matches, and `Record sorting`
+    /// does not.
     pub fn folds_a_section(&self, name: &str) -> bool {
         self.sections.iter().any(|section| {
             name.strip_prefix(section.as_str())
@@ -263,43 +263,43 @@ mod tests {
     #[test]
     fn a_section_matches_with_or_without_its_count() {
         let profile = AppProfile {
-            sections: vec!["Items".to_owned(), "Task log".to_owned()],
+            sections: vec!["Records".to_owned(), "Activity".to_owned()],
             ..Default::default()
         };
-        assert!(profile.folds_a_section("Items"));
-        assert!(profile.folds_a_section("Items12"));
-        assert!(profile.folds_a_section("Task log"));
+        assert!(profile.folds_a_section("Records"));
+        assert!(profile.folds_a_section("Records12"));
+        assert!(profile.folds_a_section("Activity"));
         // The trap this guards: a control whose name merely starts the same way.
-        assert!(!profile.folds_a_section("Item sort between status and time"));
-        assert!(!profile.folds_a_section("Itemise"));
+        assert!(!profile.folds_a_section("Record sorting"));
+        assert!(!profile.folds_a_section("Recorder"));
     }
 
     #[test]
     fn a_permanent_surface_is_recognised_doubled() {
         let profile = AppProfile {
-            permanent_surfaces: vec!["Home".to_owned(), "Settings".to_owned()],
+            permanent_surfaces: vec!["Dashboard".to_owned(), "Preferences".to_owned()],
             ..Default::default()
         };
-        assert!(profile.is_permanent("Home"));
-        assert!(profile.is_permanent("HomeHome"));
-        assert!(!profile.is_permanent("Homely"));
-        assert!(!profile.is_permanent("some project"));
+        assert!(profile.is_permanent("Dashboard"));
+        assert!(profile.is_permanent("DashboardDashboard"));
+        assert!(!profile.is_permanent("Dashboard item"));
+        assert!(!profile.is_permanent("some document"));
     }
 
     #[test]
     fn a_profile_round_trips_through_ron() {
         let profile = AppProfile {
             surfaces: vec![SurfaceSpec {
-                name: "home".to_owned(),
-                opener: "Home".to_owned(),
-                marker: Some("Dashboard heading".to_owned()),
+                name: "dashboard".to_owned(),
+                opener: "Dashboard".to_owned(),
+                marker: Some("Overview heading".to_owned()),
             }],
-            permanent_surfaces: vec!["Home".to_owned()],
-            sections: vec!["Items".to_owned()],
-            transcript_region: Some("Conversation".to_owned()),
-            home_opener: Some("Home".to_owned()),
-            deferred_controls: vec!["New project".to_owned()],
-            isolated_controls: vec!["Restart".to_owned()],
+            permanent_surfaces: vec!["Dashboard".to_owned()],
+            sections: vec!["Records".to_owned()],
+            transcript_region: Some("Message history".to_owned()),
+            home_opener: Some("Dashboard".to_owned()),
+            deferred_controls: vec!["Create document".to_owned()],
+            isolated_controls: vec!["Restart application".to_owned()],
             inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],
@@ -307,15 +307,15 @@ mod tests {
             row_action_prefixes: vec!["Rename ".to_owned()],
             fold_prefixes: vec!["Collapse ".to_owned()],
             manual_controls: vec![ManualControl {
-                label: "Attach files".to_owned(),
-                command: "choose_attachments".to_owned(),
+                label: "Import data".to_owned(),
+                command: "open_native_picker".to_owned(),
             }],
         };
         let text = ron::to_string(&profile).expect("serialises");
         let back: AppProfile = ron::from_str(&text).expect("parses");
         assert_eq!(back.surfaces.len(), 1);
-        assert_eq!(back.sections, vec!["Items".to_owned()]);
-        assert_eq!(back.transcript_region.as_deref(), Some("Conversation"));
+        assert_eq!(back.sections, vec!["Records".to_owned()]);
+        assert_eq!(back.transcript_region.as_deref(), Some("Message history"));
         assert!(back.dismisses_dialog("leave dialog"));
     }
 }
