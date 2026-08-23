@@ -71,19 +71,12 @@ fn pid_is_live(pid: u32) -> bool {
 
 /// Locate a running inspector, preferring an explicitly pinned descriptor.
 ///
-/// `local-delivery.sh stable` pins `TAURI_BLITZ_CONTROL_DESCRIPTOR` inside the
-/// bundle's `Info.plist`, so the override is the normal case, not the
-/// exception. The `$TMPDIR` scan is the fallback for a hand-launched build, and
-/// it is the one that can find a stale instance.
+/// `--descriptor <path>` wins. Otherwise the build's own pinned path is tried,
+/// then the temporary directory is scanned, which is the fallback for a
+/// hand-launched build and the one that can find a stale instance.
 pub fn discover(explicit: Option<&str>) -> Result<Descriptor> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(path) = explicit {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("TAURI_BLITZ_CONTROL_DESCRIPTOR") {
-        candidates.push(PathBuf::from(path));
-    }
-    for path in candidates {
+        let path = PathBuf::from(path);
         if path.exists() {
             return read_descriptor(&path);
         }
@@ -144,7 +137,8 @@ pub fn discover(explicit: Option<&str>) -> Result<Descriptor> {
         Some(descriptor) => Ok(descriptor),
         None => bail!(
             "no inspector descriptor found; is a diagnostics build running?\n\
-             looked at $TAURI_BLITZ_CONTROL_DESCRIPTOR and {}",
+             looked at target/blitz-control.json and {}. Pass --descriptor \
+             <path> to name one.",
             root.display()
         ),
     }

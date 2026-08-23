@@ -150,10 +150,20 @@ impl AppProfile {
     /// all. Only the sweep needs to be told where to go.
     pub fn load(path: Option<&Path>) -> Result<Self, String> {
         let Some(path) = path.map(Path::to_path_buf).or_else(discover) else {
-            return Ok(Self::default());
+            return Err(
+                "no application profile. Pass --app <path>, or put ps-qa.ron in the \
+                 working directory: the harness knows nothing about any application \
+                 without one, and guessing produces numbers measured against an \
+                 application that does not exist."
+                    .to_owned(),
+            );
         };
         if !path.exists() {
-            return Ok(Self::default());
+            return Err(format!(
+                "no application profile at {}. Pass --app <path>, or put ps-qa.ron in \
+                 the working directory.",
+                path.display()
+            ));
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;
@@ -183,10 +193,10 @@ impl AppProfile {
     }
 }
 
-/// `$PS_QA_APP`, then `ps-qa.ron` in the working directory.
+/// `--app <path>`, then `ps-qa.ron` in the working directory.
 fn discover() -> Option<PathBuf> {
-    if let Some(from_env) = std::env::var_os("PS_QA_APP") {
-        return Some(PathBuf::from(from_env));
+    if let Some(pinned) = crate::cli::app_profile() {
+        return Some(pinned);
     }
     let beside = PathBuf::from("ps-qa.ron");
     beside.exists().then_some(beside)
@@ -196,13 +206,19 @@ fn discover() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// A missing profile is an error, not an empty one.
+    ///
+    /// This test used to assert the opposite. Loading a default meant the
+    /// harness carried on describing an application nobody had described to it,
+    /// and every count it reported afterwards was measured against a surface
+    /// list that did not exist. Refusing to start names the missing file
+    /// instead.
     #[test]
-    fn an_absent_profile_is_empty_rather_than_an_error() {
-        let profile = AppProfile::load(Some(Path::new("/nonexistent/ps-qa.ron")))
-            .expect("a missing profile is not a failure");
-        assert!(profile.surfaces.is_empty());
-        // And it must not pretend to know another application's sections.
-        assert!(!profile.folds_a_section("Task log"));
+    fn an_absent_profile_is_an_error() {
+        let error = AppProfile::load(Some(Path::new("/nonexistent/ps-qa.ron")))
+            .expect_err("a missing profile must not load a default");
+        assert!(error.contains("no application profile"), "{error}");
+        assert!(error.contains("--app"), "{error}");
     }
 
     #[test]

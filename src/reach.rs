@@ -597,15 +597,25 @@ pub fn profile() -> &'static crate::app::AppProfile {
     static PROFILE: std::sync::OnceLock<crate::app::AppProfile> = std::sync::OnceLock::new();
     PROFILE.get_or_init(|| match crate::app::AppProfile::load(None) {
         Ok(profile) => profile,
-        // A profile that exists and does not parse is a typo, not a decision to
-        // run without one. Degrading to an empty one silently is how a sweep
-        // reports "0 sections opened" against an application with six of them
-        // and nobody notices for an afternoon.
-        Err(error) => {
-            eprintln!("ps-qa: {error}");
-            eprintln!("ps-qa: continuing without a profile; collapses will not be deferred");
-            crate::app::AppProfile::default()
-        }
+        // No fallback profile, and no continuing without one.
+        //
+        // A missing or unparseable profile is a typo or a wrong working
+        // directory, never a decision to run against a description of some
+        // other application. Substituting an empty one is how a sweep reports
+        // "0 sections opened" against an application with six of them, and
+        // nobody notices for an afternoon: every number after that point is
+        // measured against something that does not exist, which is worse than
+        // no number at all.
+        //
+        // `main` validates the profile before it drives anything, so reaching
+        // here means a unit test asked for the profile without one on disk.
+        // Those tests cover the half of this module that is about how a tab
+        // strip renders rather than about any one application, so an empty
+        // profile is the honest answer for them and unreachable outside them.
+        #[cfg(test)]
+        Err(_) => crate::app::AppProfile::default(),
+        #[cfg(not(test))]
+        Err(error) => panic!("no application profile: {error}"),
     })
 }
 

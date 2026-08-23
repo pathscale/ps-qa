@@ -179,18 +179,17 @@ pub struct Check {
 /// behaviour of its own, so it belongs in a file the application owns and
 /// anybody can edit between runs.
 ///
-/// Read from `<dir>/*.ron`, where `<dir>` is `--checks <path>`, `$PS_QA_CHECKS`,
-/// or `tests/ps-qa/` under the working directory. Files are read in name order
-/// and concatenated, so the group order is the filename order.
+/// Read from `<dir>/*.ron`, where `<dir>` is `--checks <path>` or `tests/ps-qa/`
+/// under the working directory. Files are read in name order and concatenated,
+/// so the group order is the filename order.
 pub fn checks(dir: Option<&std::path::Path>) -> Result<Vec<Check>, String> {
     let dir = dir
         .map(std::path::Path::to_path_buf)
-        .or_else(|| std::env::var_os("PS_QA_CHECKS").map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::path::PathBuf::from("tests/ps-qa"));
     if !dir.is_dir() {
         return Err(format!(
-            "no checks at {}. Point --checks or $PS_QA_CHECKS at the \
-             application's check directory.",
+            "no checks at {}. Point --checks at the application's check \
+             directory.",
             dir.display()
         ));
     }

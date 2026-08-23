@@ -2991,6 +2991,7 @@ async fn main() -> Result<()> {
     let cli = <cli::Cli as clap::Parser>::parse();
     cli::set_trace(cli.trace);
     cli::set_pace(cli.pace);
+    cli::set_app_profile(cli.app.clone());
 
     // The inventory reads the check list, not the application, so it answers
     // "what is covered" with nothing running. Before the descriptor lookup for
@@ -3003,6 +3004,11 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+
+    // Before attaching to anything: a run that drives an application against a
+    // profile it does not have is worse than one that refuses to start, and
+    // failing here names the missing file rather than reporting nothing found.
+    app::AppProfile::load(cli.app.as_deref()).map_err(|error| eyre!(error))?;
 
     let descriptor = inspector::discover(cli.descriptor.as_deref().and_then(|p| p.to_str()))?;
     descriptor.warn_if_stale();

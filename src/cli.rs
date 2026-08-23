@@ -45,13 +45,22 @@ use clap::{Parser, Subcommand};
     version,
 )]
 pub struct Cli {
-    /// The inspector descriptor to attach to. Defaults to the one the running
-    /// application advertises in the temporary directory.
-    #[arg(long, global = true, env = "TAURI_BLITZ_CONTROL_DESCRIPTOR")]
+    /// The inspector descriptor to attach to. Defaults to
+    /// `target/blitz-control.json`, then the newest one the running application
+    /// advertises in the temporary directory.
+    #[arg(long, global = true)]
     pub descriptor: Option<PathBuf>,
 
-    /// Inter-event delay in seconds. 0 saturates the event queue, which is how
-    /// a renderer's coalescing is measured rather than its steady state.
+    /// The application profile: which surfaces exist, what they are called, and
+    /// which controls must not be pressed. Defaults to `ps-qa.ron` in the
+    /// working directory, and to a built-in profile when there is none.
+    #[arg(long, global = true)]
+    pub app: Option<PathBuf>,
+
+    /// Inter-event delay in seconds. Pass 0 to saturate the event queue, which
+    /// measures a renderer's coalescing rather than its steady state: at the
+    /// default the harness sets the cadence, so the reported frame interval
+    /// describes the harness rather than the application.
     #[arg(long, global = true, default_value_t = 1.0 / 60.0)]
     pub pace: f64,
 
@@ -318,6 +327,21 @@ pub fn set_trace(on: bool) {
 /// Record the inter-event delay. Called once, from `main`.
 pub fn set_pace(seconds: f64) {
     PACE.store(seconds.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `--app <path>`, if one was given. Set once, from `main`, for the same reason
+/// as `TRACE`: the profile is read from inside the reach and sweep code, several
+/// frames below anything that has seen the command line.
+static APP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+/// Record the profile path. Called once, from `main`.
+pub fn set_app_profile(path: Option<PathBuf>) {
+    let _ = APP.set(path);
+}
+
+/// The profile path named on the command line, if any.
+pub fn app_profile() -> Option<PathBuf> {
+    APP.get().cloned().flatten()
 }
 
 /// The inter-event delay, in seconds.
