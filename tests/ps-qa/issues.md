@@ -160,6 +160,40 @@ the old figure double-counted. These are the truthful ones.
 
 ---
 
+## 3b. Findings from a single live instance, 2026-08-23
+
+One app, many probes, no rebuild between them. Recorded here because each is a
+number somebody should either fix or deliberately accept.
+
+**70 on-screen buttons have no accessible name.** Measured with `layout`,
+filtering to a real box: 70 controls paint, are pressable, and announce nothing.
+Two consequences, and the second is the one that shows up in this file. A screen
+reader reads them as unlabelled. And `ps-qa` drives controls *by name*, so these
+cannot be reached by any check that could ever be written: they are a permanent
+floor under the 173 never-driven controls, not a backlog item. Naming them is
+the only thing that makes them testable.
+
+**Settings is correctly unmounted when you leave it**, contrary to a first
+reading here that said otherwise. 7 `Parse Prompt Syntax controls` nodes stay in
+the tree after navigating to Home, all at `0x0`. That matches the note at
+`App.tsx:235-250`: Settings is ~9308px tall and deliberately not retained. The
+first reading came from an `awk` column slip, which is worth recording as its
+own warning: `layout` prints `id role x y w h`, and reading `$4` as width says a
+node paints when it does not.
+
+**Clicking an already-open Settings tab does raise it.** Probed directly - open
+Settings, go Home, click Settings - and the surface came back. `openSettings()`
+in `stores/workspace.tsx` guards only the tab *append*; `focus()` is called
+unconditionally. Recorded because the opposite was suspected, and a suspicion
+that is not written down gets re-investigated.
+
+**`spill` reports scrolled content as spill.** 8 tab-strip children sit at
+negative x, up to 1,375px left of their parent, which reads as a serious layout
+break. The parent is a scroller: `scroll=1186.0`, `content=2068.1`,
+`client=855.2`. They are scrolled out of view, exactly as intended. `spill`
+should subtract the container's scroll offset before judging, or it will keep
+costing somebody an afternoon.
+
 ## 4. Unknowns
 
 Not bugs. Things nobody has measured, listed so they stop being invisible.
