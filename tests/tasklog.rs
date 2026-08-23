@@ -9,6 +9,17 @@
 //! pencil is a `role="button"` that folds on `click`, the framework delegates
 //! `click`, and the pencil's `stopPropagation` lost that race. jsdom has no
 //! competing handler, so it never saw the conflict.
+//!
+//! # These need a project with items, and the pristine profile has none
+//!
+//! Every project in the QA fixture reports `Items0`, so the row controls these
+//! assert on are never built and the checks fail with "no node matching". That
+//! is a fixture gap, not an application fault: the controls cannot be judged
+//! either way until the profile has a project with at least one item.
+//!
+//! Fix the fixture rather than the checks - deleting them would lose the only
+//! coverage of the panel's row controls, which is where the owner reports most
+//! problems.
 
 use crate::qa::{Check, Expect};
 
