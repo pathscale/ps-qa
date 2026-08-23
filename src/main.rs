@@ -1623,6 +1623,145 @@ impl From<&(&qa::Check, std::result::Result<(), String>)> for CheckRow {
     }
 }
 
+/// One control, as `find` reports it.
+#[derive(serde::Serialize)]
+struct FoundRow {
+    id: u64,
+    role: String,
+    name: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    /// `visible`, `hidden`, `disabled`, `0x0`, `offscreen`, comma-joined. The
+    /// question behind most lookups is "why can nobody press this", and the
+    /// answer is a combination of those rather than any one of them.
+    state: String,
+}
+
+/// Every control matching a role, a name pattern and a state.
+///
+/// Replaces the `layout | awk` pipeline that every non-trivial question used to
+/// need. The filters are the ones that were actually reassembled by hand, over
+/// and over: which buttons are off screen, what is painting at 0x0, what does
+/// this surface contain.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each one is a filter the caller asks for by name"
+)]
+async fn find(
+    client: &mut Client,
+    pattern: &str,
+    roles: &[String],
+    visible: bool,
+    hidden: bool,
+    painted: bool,
+    offscreen_only: bool,
+    disabled: bool,
+    count_only: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    let (snapshot, elapsed) = inspect(client).await?;
+    let viewport = viewport_of(&snapshot);
+
+    let rows: Vec<FoundRow> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| roles.is_empty() || roles.iter().any(|role| role == &node.role))
+        .filter(|node| name_matches(&node.name, pattern))
+        .filter(|node| !visible || node.visible)
+        .filter(|node| !hidden || !node.visible)
+        .filter(|node| !disabled || !node.enabled)
+        .filter(|node| {
+            !painted
+                || node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+        })
+        .filter(|node| {
+            !offscreen_only
+                || node
+                    .bounds
+                    .is_some_and(|bounds| offscreen(bounds, viewport))
+        })
+        .map(|node| {
+            let bounds = node.bounds.unwrap_or([0.0; 4]);
+            let mut state: Vec<&str> = Vec::new();
+            state.push(if node.visible { "visible" } else { "hidden" });
+            if !node.enabled {
+                state.push("disabled");
+            }
+            if bounds[2] <= 0.0 || bounds[3] <= 0.0 {
+                state.push("0x0");
+            } else if offscreen(bounds, viewport) {
+                state.push("offscreen");
+            }
+            // Rounded to a tenth. Layout arrives as f64 and prints as
+            // `20.8799991607666`, which is six times the tokens of `20.9` and
+            // tells the reader nothing a control's geometry depends on.
+            let round = |value: f64| (value * 10.0).round() / 10.0;
+            FoundRow {
+                id: node.id,
+                role: node.role.clone(),
+                name: node.name.clone(),
+                x: round(bounds[0]),
+                y: round(bounds[1]),
+                w: round(bounds[2]),
+                h: round(bounds[3]),
+                state: state.join(","),
+            }
+        })
+        .collect();
+
+    let matched = rows.len();
+    let shown: Vec<FoundRow> = match limit {
+        Some(limit) => rows.into_iter().take(limit).collect(),
+        None => rows,
+    };
+
+    #[derive(serde::Serialize)]
+    struct Found {
+        matched: usize,
+        of: usize,
+        inspect_ms: f64,
+        controls: Vec<FoundRow>,
+    }
+
+    let report = Found {
+        matched,
+        of: snapshot.nodes.len(),
+        inspect_ms: (elapsed * 10.0).round() / 10.0,
+        controls: if count_only { Vec::new() } else { shown },
+    };
+    println!(
+        "{}",
+        toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
+    );
+    Ok(())
+}
+
+/// Glob-style name matching.
+///
+/// `chat*` for a prefix, `*close*` for anywhere, `*` for everything. A pattern
+/// with no `*` is a substring, because that is how a control is remembered:
+/// asking for `Rename` should find `Rename project` without ceremony.
+fn name_matches(name: &str, pattern: &str) -> bool {
+    let (name, pattern) = (name.to_lowercase(), pattern.to_lowercase());
+    if pattern == "*" {
+        return true;
+    }
+    let Some(stripped) = pattern.strip_prefix('*') else {
+        return match pattern.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => name.contains(&pattern),
+        };
+    };
+    match stripped.strip_suffix('*') {
+        Some(middle) => name.contains(middle),
+        None => name.ends_with(stripped),
+    }
+}
+
 /// The viewport, read from the tree rather than assumed.
 ///
 /// Shared by every driving mode so they agree on what is on screen. `sweep` and
@@ -1699,7 +1838,29 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
             if !offscreen(bounds, viewport) {
                 return Some((node.id, bounds));
             }
-            fallback.get_or_insert((node.id, bounds));
+            /*
+             * Of the off-screen matches, prefer one `ScrollIntoView` can
+             * actually recover.
+             *
+             * It scrolls vertically. A control below the fold comes back; one
+             * pushed off the side by an overflowing strip does not, and
+             * `reveal` on such a node reports `moved 0.0`. Taking the first
+             * match in tree order picked exactly that unreachable case: a
+             * project name matches both its tab, parked at x=-742, and its row
+             * in the list at y=2057, and only the second could be reached.
+             *
+             * This is a consolation prize, not a fix. The protocol's `Pointer`
+             * takes x and y where `Click` takes a node id, so a real
+             * press-and-release has to compute a coordinate at all, and a
+             * control the window cannot show has no honest one. `ps-qa find
+             * --offscreen` reports which controls are in that state.
+             */
+            let recoverable = bounds[0] + bounds[2] > 0.0;
+            if recoverable && !fallback.is_some_and(|(_, b): (u64, [f64; 4])| b[0] + b[2] > 0.0) {
+                fallback = Some((node.id, bounds));
+            } else {
+                fallback.get_or_insert((node.id, bounds));
+            }
         }
         fallback
     };
@@ -3069,6 +3230,31 @@ async fn main() -> Result<()> {
                 .await?;
             println!("{}", report::dump(&answer.envelope, 3000));
         }
+        cli::Command::Find {
+            pattern,
+            role,
+            visible,
+            hidden,
+            painted,
+            offscreen,
+            disabled,
+            count,
+            limit,
+        } => {
+            find(
+                &mut client,
+                &pattern,
+                &role,
+                visible,
+                hidden,
+                painted,
+                offscreen,
+                disabled,
+                count,
+                limit,
+            )
+            .await?;
+        }
         cli::Command::Layout { name } => {
             layout(&mut client, &name).await?;
         }
@@ -3492,4 +3678,49 @@ async fn main() -> Result<()> {
         cli::Command::List { .. } => unreachable!("handled before the client connects"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::name_matches;
+
+    /// A bare word is a substring, because that is how a control is recalled.
+    #[test]
+    fn a_bare_pattern_is_a_substring() {
+        assert!(name_matches("Rename project", "rename"));
+        assert!(name_matches("Rename project", "project"));
+        assert!(!name_matches("Rename project", "delete"));
+    }
+
+    #[test]
+    fn a_trailing_star_anchors_the_front() {
+        assert!(name_matches("chat with agent", "chat*"));
+        assert!(!name_matches("open chat", "chat*"));
+    }
+
+    #[test]
+    fn a_leading_star_anchors_the_end() {
+        assert!(name_matches("open chat", "*chat"));
+        assert!(!name_matches("chat with agent", "*chat"));
+    }
+
+    #[test]
+    fn stars_at_both_ends_match_anywhere() {
+        assert!(name_matches("the chat panel", "*chat*"));
+        assert!(!name_matches("Rename project", "*chat*"));
+    }
+
+    /// Matching is case insensitive: a name is remembered by its words, not by
+    /// the capitalisation a designer chose.
+    #[test]
+    fn matching_ignores_case() {
+        assert!(name_matches("Rename Project", "rename project"));
+        assert!(name_matches("CHAT", "chat*"));
+    }
+
+    #[test]
+    fn a_lone_star_matches_everything() {
+        assert!(name_matches("anything at all", "*"));
+        assert!(name_matches("", "*"));
+    }
 }
