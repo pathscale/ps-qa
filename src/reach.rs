@@ -722,12 +722,31 @@ pub struct Coverage {
     /// bug upstream of them traps the window. Counting them as anything else
     /// hides the blast radius of that bug.
     pub blocked: usize,
+    /// Swept, but not present when `in_tree` was counted.
+    ///
+    /// A dialog's own controls do not exist until it opens, and a row's actions
+    /// do not exist until it is hovered, so both are pressed without ever having
+    /// been in the snapshot the total came from. Charged to `swept`, they pushed
+    /// the buckets past the total and the consistency check reported a *negative*
+    /// `UNACCOUNTED` - a surplus - which read as "more than covered" when the
+    /// real meaning was that the denominator was wrong.
+    ///
+    /// Separate from `swept` so the surplus cannot hide a genuine gap: a run can
+    /// now be short of coverage and full of dialogs at the same time and still
+    /// report both.
+    pub revealed: usize,
 }
 
 impl Coverage {
     /// Every button ended in a bucket.
     pub fn accounted(&self) -> bool {
-        self.bucketed() == self.in_tree
+        self.bucketed() == self.total()
+    }
+
+    /// Everything a run was responsible for: the surface's own buttons plus the
+    /// ones that only came into existence once it started pressing things.
+    pub fn total(&self) -> usize {
+        self.in_tree + self.revealed
     }
 
     fn bucketed(&self) -> usize {
@@ -738,12 +757,18 @@ impl Coverage {
             + self.navigation
             + self.native
             + self.blocked
+            + self.revealed
     }
 
     pub fn line(&self) -> String {
         format!(
-            "{} buttons: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} native, {} blocked{}",
-            self.in_tree,
+            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} native, {} blocked{}",
+            self.total(),
+            if self.revealed > 0 {
+                format!(" ({} on open, {} revealed)", self.in_tree, self.revealed)
+            } else {
+                String::new()
+            },
             self.swept,
             self.unreachable,
             self.hidden,
@@ -756,7 +781,7 @@ impl Coverage {
             } else {
                 format!(
                     " (UNACCOUNTED {})",
-                    self.in_tree as i64 - self.bucketed() as i64
+                    self.total() as i64 - self.bucketed() as i64
                 )
             }
         )
@@ -941,6 +966,7 @@ mod tests {
             navigation: 1,
             native: 1,
             blocked: 1,
+            revealed: 0,
         };
         assert!(full.accounted());
         assert!(!full.line().contains("UNACCOUNTED"));
@@ -948,14 +974,50 @@ mod tests {
         let leaky = Coverage {
             in_tree: 10,
             swept: 6,
-            unreachable: 0,
-            hidden: 0,
-            vanished: 0,
-            navigation: 0,
-            native: 0,
-            blocked: 0,
+            ..Default::default()
         };
         assert!(!leaky.accounted());
         assert!(leaky.line().contains("UNACCOUNTED 4"));
+    }
+
+    #[test]
+    fn a_dialogs_own_controls_do_not_overflow_the_total() {
+        /*
+         * The regression: `cover home` reported `UNACCOUNTED -47`.
+         *
+         * A dialog's buttons do not exist when the surface is counted, so
+         * pressing them used to increment `swept` against a total that never
+         * included them. The buckets overran the denominator and the check went
+         * negative - reporting a surplus, which reads as "better than covered"
+         * when it actually means the number is meaningless.
+         */
+        let with_a_dialog = Coverage {
+            in_tree: 10,
+            swept: 10,
+            revealed: 4,
+            ..Default::default()
+        };
+        assert!(
+            with_a_dialog.accounted(),
+            "revealed controls extend the total: {}",
+            with_a_dialog.line()
+        );
+        assert_eq!(with_a_dialog.total(), 14);
+        assert!(with_a_dialog.line().contains("(10 on open, 4 revealed)"));
+    }
+
+    #[test]
+    fn a_surplus_cannot_hide_a_real_gap() {
+        // Ten on the surface, four of them never reached, plus four dialog
+        // controls pressed. The old accounting cancelled one against the other
+        // and reported a clean run; the gap has to survive the dialog.
+        let both = Coverage {
+            in_tree: 10,
+            swept: 6,
+            revealed: 4,
+            ..Default::default()
+        };
+        assert!(!both.accounted());
+        assert!(both.line().contains("UNACCOUNTED 4"), "{}", both.line());
     }
 }
