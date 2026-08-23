@@ -203,7 +203,7 @@ permutation.
 Assert ink, not just a box. This is what the original regression needed.
 
 ### 9. Per-group fixtures
-`tests/` hardcodes `theta theta north indi`, `e756` and `Home`. A check should
+`tests/ps-qa/` hardcodes `theta theta north indi`, `e756` and `Home`. A check should
 declare what it needs - "a project with items" - and the runner should find one.
 
 **This is not hypothetical.** Rebuilding the profile on 2026-08-23 renamed both
