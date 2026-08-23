@@ -29,11 +29,26 @@ mod qa;
 mod reach;
 mod report;
 mod sweep;
-// The checks live in `tests/`, one file per group. `#[path]` because cargo
-// reserves a bare top-level `tests/` for integration tests, and these are data
-// compiled into the binary rather than a separate test target.
-#[path = "../tests/mod.rs"]
-mod tests;
+/*
+ * The checks live in `tests/ps-qa/`, one file per group.
+ *
+ * Nested one level deliberately. Cargo auto-discovers a bare `.rs` file at the
+ * top of `tests/` as its own integration-test binary, and these are not that:
+ * they are data describing
+ * what this particular application promises, compiled into `ps-qa` itself and
+ * consumed at run time by `ps-qa qa`. A subdirectory is not chased, so nesting
+ * keeps them under `tests/` where a reader looks for them without cargo trying
+ * to build each one as its own crate.
+ *
+ * `#[path]` because they sit outside `src/`, which is the point: pointing a
+ * second application at this harness means giving it a different `tests/ps-qa/`,
+ * not a fork.
+ *
+ * The real unit tests are `#[cfg(test)]` blocks in `src/`, and `cargo test`
+ * runs those. Running the checks needs a live app: `ps-qa qa`.
+ */
+#[path = "../tests/ps-qa/mod.rs"]
+mod ps_qa_checks;
 
 use inspector::Client;
 

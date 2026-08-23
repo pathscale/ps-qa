@@ -160,12 +160,12 @@ pub struct Check {
 
 /// Every check, in the order they run.
 ///
-/// The checks themselves live in `tests/`, one file per group, because a check
+/// The checks themselves live in `tests/ps-qa/`, one file per group, because a check
 /// is data rather than engine: this file decides what a verdict *means*, and
-/// `tests/` says what this particular application promises. Pointing a second
-/// app at this harness means giving it a different `tests/`, not a fork.
+/// `tests/ps-qa/` says what this particular application promises. Pointing a second
+/// app at this harness means giving it a different `tests/ps-qa/`, not a fork.
 pub fn checks() -> Vec<Check> {
-    crate::tests::all()
+    crate::ps_qa_checks::all()
 }
 
 /// The side panel's left edge, in window coordinates.
