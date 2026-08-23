@@ -115,7 +115,7 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
     let tab = nodes
         .iter()
         .filter(|n| n.role == "button" && onscreen(n))
-        .filter(|n| !PERMANENT.contains(&n.name.as_str()))
+        .filter(|n| !profile().is_permanent(&n.name))
         .find(|n| {
             doubled(&n.name).is_some_and(|label| !PERMANENT.contains(&label))
                 || closes
@@ -663,20 +663,38 @@ pub fn may_open_native_chooser(name: &str) -> bool {
 /// the Items section a dozen controls before it reached the rows, so every
 /// per-item control read as vanished and the dialog was never opened.
 pub fn folds_a_section(name: &str) -> bool {
-    const SECTIONS: &[&str] = &[
-        "Items",
-        "Running",
-        "Task log",
-        "Agent I/O",
-        "Kept across compaction",
-        "Recent",
-    ];
-    SECTIONS.iter().any(|section| {
-        name.strip_prefix(section)
-            // The header carries a count, so what follows must be a number or
-            // nothing at all; "Items" matches, "Items1" matches, and
-            // "Item sort between status and time" does not.
-            .is_some_and(|rest| rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()))
+    /*
+     * Read from the application's own profile, falling back to nothing.
+     *
+     * These are six section names from one product, and a harness has no
+     * business knowing them. An application states its own in `ps-qa.ron`; one
+     * that ships no profile gets an empty list, which means the sweep presses
+     * sections in plan order rather than last. That is a worse sweep, not a
+     * wrong one, and it beats hunting for another product's headers.
+     *
+     * Read once: this is called per button per surface, and a file read per
+     * call would dominate the sweep.
+     */
+    profile().folds_a_section(name)
+}
+
+/// The application profile, read once.
+///
+/// This is called per button per surface, so a file read per call would
+/// dominate the sweep.
+pub fn profile() -> &'static crate::app::AppProfile {
+    static PROFILE: std::sync::OnceLock<crate::app::AppProfile> = std::sync::OnceLock::new();
+    PROFILE.get_or_init(|| match crate::app::AppProfile::load(None) {
+        Ok(profile) => profile,
+        // A profile that exists and does not parse is a typo, not a decision to
+        // run without one. Degrading to an empty one silently is how a sweep
+        // reports "0 sections opened" against an application with six of them
+        // and nobody notices for an afternoon.
+        Err(error) => {
+            eprintln!("ps-qa: {error}");
+            eprintln!("ps-qa: continuing without a profile; collapses will not be deferred");
+            crate::app::AppProfile::default()
+        }
     })
 }
 

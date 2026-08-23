@@ -32,6 +32,9 @@ eyre = "0.6"
 # transport is line-delimited JSON.
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
+# The application profile is data, so the harness reads a file rather than
+# hardcoding one product's surface names.
+ron = "0.8"
 # `preserve_order` so the JSON dumps keep the server's field order rather than
 # sorting it. The dump modes exist to be diffed against previous runs, and
 # alphabetising the keys would make every historical comparison useless.

@@ -51,7 +51,7 @@ use std::collections::HashMap;
 /// unconstructed the moment `tasklog-2` was strengthened to `PaintsMore`; it is
 /// still the correct assertion for anything that mounts without painting.
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Expect {
     /// The named node exists, is visible, and has a non-zero box.
     ///
@@ -122,6 +122,8 @@ pub enum Expect {
 }
 
 /// One thing that must be true of the running panel.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Check {
     /// Stable name for this one check, so a failure can be re-run alone.
     ///
@@ -129,11 +131,11 @@ pub struct Check {
     /// neighbours every time, and each run drives the real app. `what` is prose
     /// and changes when the wording improves, so it cannot be the handle.
     /// This is the handle - `ps-qa qa rename-opens-editor`.
-    pub id: &'static str,
+    pub id: String,
     /// Group, so a failing area can be re-run alone.
-    pub group: &'static str,
+    pub group: String,
     /// What this proves, in the words you would use to report it.
-    pub what: &'static str,
+    pub what: String,
     /// Press this first, to reach the surface the check is about.
     ///
     /// Checks run in sequence against one instance and start wherever the app
@@ -142,11 +144,11 @@ pub struct Check {
     /// and a check for it failed with "no visible, enabled, sized button" -
     /// which reads as a missing control rather than a check that never got
     /// there.
-    pub open: Option<&'static str>,
+    pub open: Option<String>,
     /// Hover this node first, if the control is revealed on hover.
-    pub hover: Option<&'static str>,
+    pub hover: Option<String>,
     /// Click this node, if the check is about an action.
-    pub click: Option<&'static str>,
+    pub click: Option<String>,
     /// Drive `click` with a real pointer instead of a synthesised event.
     ///
     /// `AgentAction::Click` dispatches a `click` and nothing else, so a control
@@ -157,7 +159,7 @@ pub struct Check {
     /// asserts the harness rather than the app.
     pub press: bool,
     /// The node the assertion is about.
-    pub subject: &'static str,
+    pub subject: String,
     pub expect: Expect,
     /// Count only inside the side panel.
     ///
@@ -166,14 +168,56 @@ pub struct Check {
     pub panel_only: bool,
 }
 
-/// Every check, in the order they run.
+/// Every check, in the order they run, read from the application's own files.
 ///
-/// The checks themselves live in `tests/ps-qa/`, one file per group, because a check
-/// is data rather than engine: this file decides what a verdict *means*, and
-/// `tests/ps-qa/` says what this particular application promises. Pointing a second
-/// app at this harness means giving it a different `tests/ps-qa/`, not a fork.
-pub fn checks() -> Vec<Check> {
-    crate::ps_qa_checks::all()
+/// # Why these are not compiled in
+///
+/// They used to be Rust, in a `tests/ps-qa/` module inside this crate, which was
+/// wrong twice over. It put one product's promises - `Rename project`, `Task
+/// log`, a fixture called `theta theta north indi` - inside a general harness,
+/// so pointing this binary at a second application meant editing the harness.
+/// And it made changing a selector a recompile: correcting one hardcoded
+/// fixture name after a profile rebuild touched 15 references across 6 files
+/// and needed a build to try.
+///
+/// A check is data. It is a precondition, an action and an assertion, with no
+/// behaviour of its own, so it belongs in a file the application owns and
+/// anybody can edit between runs.
+///
+/// Read from `<dir>/*.ron`, where `<dir>` is `--checks <path>`, `$PS_QA_CHECKS`,
+/// or `tests/ps-qa/` under the working directory. Files are read in name order
+/// and concatenated, so the group order is the filename order.
+pub fn checks(dir: Option<&std::path::Path>) -> Result<Vec<Check>, String> {
+    let dir = dir
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::var_os("PS_QA_CHECKS").map(std::path::PathBuf::from))
+        .unwrap_or_else(|| std::path::PathBuf::from("tests/ps-qa"));
+    if !dir.is_dir() {
+        return Err(format!(
+            "no checks at {}. Point --checks or $PS_QA_CHECKS at the \
+             application's check directory.",
+            dir.display()
+        ));
+    }
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|error| format!("could not read {}: {error}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "ron"))
+        .collect();
+    // Name order, so a run is reproducible rather than dependent on whatever
+    // order the filesystem happens to hand back.
+    files.sort();
+
+    let mut all = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file)
+            .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+        let group: Vec<Check> = ron::from_str(&text)
+            .map_err(|error| format!("could not parse {}: {error}", file.display()))?;
+        all.extend(group);
+    }
+    Ok(all)
 }
 
 /// The side panel's left edge, in window coordinates.
@@ -231,7 +275,7 @@ pub fn verdict(
     before: &[SemanticNode],
     after: &[SemanticNode],
 ) -> Result<(), String> {
-    let found = matching(after, check.subject, check.panel_only);
+    let found = matching(after, &check.subject, check.panel_only);
     match check.expect {
         Expect::Vanishes => {
             let on_screen: Vec<&SemanticNode> =
@@ -295,7 +339,10 @@ pub fn verdict(
             }
         }
         Expect::PaintsNamed => {
-            let (role, name) = check.subject.split_once(':').unwrap_or(("", check.subject));
+            let (role, name) = check
+                .subject
+                .split_once(':')
+                .unwrap_or(("", &check.subject));
             let hit = after
                 .iter()
                 .filter(|node| node.role == role && node.name.contains(name))
@@ -311,7 +358,7 @@ pub fn verdict(
             }
         }
         Expect::PaintsMore => {
-            let was = matching(before, check.subject, check.panel_only)
+            let was = matching(before, &check.subject, check.panel_only)
                 .into_iter()
                 .filter(|node| paints(node))
                 .count();
@@ -324,7 +371,7 @@ pub fn verdict(
             }
         }
         Expect::Grows => {
-            let was = matching(before, check.subject, check.panel_only).len();
+            let was = matching(before, &check.subject, check.panel_only).len();
             let now = found.len();
             if now <= was {
                 return Err(format!(
@@ -334,7 +381,7 @@ pub fn verdict(
             }
         }
         Expect::Holds => {
-            let was = matching(before, check.subject, check.panel_only).len();
+            let was = matching(before, &check.subject, check.panel_only).len();
             let now = found.len();
             if now != was {
                 return Err(format!(
@@ -353,16 +400,16 @@ pub fn verdict(
 /// down, so it cannot drift from what actually runs. This is the inventory: it
 /// answers "what is covered" without launching the app, which is the question
 /// that had no answer while the audit was a list of button names in a handover.
-pub fn manifest() -> String {
-    let all = checks();
+pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
+    let all = checks(dir)?;
     let mut out = String::new();
-    let mut current = "";
+    let mut current = String::new();
     for check in &all {
         if check.group != current {
-            current = check.group;
+            current = check.group.clone();
             out.push_str(&format!("\n{current}\n"));
         }
-        let action = match (check.hover, check.click, check.press) {
+        let action = match (&check.hover, &check.click, check.press) {
             (Some(h), Some(c), true) => format!("hover {h:?}, press {c:?}"),
             (Some(h), Some(c), false) => format!("hover {h:?}, click {c:?}"),
             (Some(h), None, _) => format!("hover {h:?}"),
@@ -376,18 +423,18 @@ pub fn manifest() -> String {
         ));
     }
     out.push_str(&format!("\n{} checks in {} groups\n", all.len(), {
-        let mut groups: Vec<&str> = all.iter().map(|c| c.group).collect();
+        let mut groups: Vec<&str> = all.iter().map(|c| c.group.as_str()).collect();
         groups.dedup();
         groups.len()
     }));
-    out
+    Ok(out)
 }
 
 /// Count matching nodes per group, for the summary line.
-pub fn tally(results: &[(&Check, Result<(), String>)]) -> HashMap<&'static str, (usize, usize)> {
-    let mut by_group: HashMap<&'static str, (usize, usize)> = HashMap::new();
+pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str, (usize, usize)> {
+    let mut by_group: HashMap<&str, (usize, usize)> = HashMap::new();
     for (check, outcome) in results {
-        let entry = by_group.entry(check.group).or_insert((0, 0));
+        let entry = by_group.entry(check.group.as_str()).or_insert((0, 0));
         entry.1 += 1;
         if outcome.is_ok() {
             entry.0 += 1;

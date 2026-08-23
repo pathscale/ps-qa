@@ -21,34 +21,28 @@ use blitz_control_protocol::{
     DebugStream, DiagnosticsRequest, InputCommand, KeyPhase, Modifiers, PointerPhase,
     RendererMetrics, SemanticNode, SnapshotRequest, WheelPhase,
 };
-use eyre::{Result, bail};
+use eyre::{Result, bail, eyre};
 
+mod app;
 mod audit;
 mod inspector;
 mod qa;
 mod reach;
 mod report;
 mod sweep;
-/*
- * The checks live in `tests/ps-qa/`, one file per group.
- *
- * Nested one level deliberately. Cargo auto-discovers a bare `.rs` file at the
- * top of `tests/` as its own integration-test binary, and these are not that:
- * they are data describing
- * what this particular application promises, compiled into `ps-qa` itself and
- * consumed at run time by `ps-qa qa`. A subdirectory is not chased, so nesting
- * keeps them under `tests/` where a reader looks for them without cargo trying
- * to build each one as its own crate.
- *
- * `#[path]` because they sit outside `src/`, which is the point: pointing a
- * second application at this harness means giving it a different `tests/ps-qa/`,
- * not a fork.
- *
- * The real unit tests are `#[cfg(test)]` blocks in `src/`, and `cargo test`
- * runs those. Running the checks needs a live app: `ps-qa qa`.
- */
-#[path = "../tests/ps-qa/mod.rs"]
-mod ps_qa_checks;
+/// `--checks <dir>`, wherever it appears after the mode.
+///
+/// Returned rather than parsed once, because `list` needs it without a running
+/// app and `qa` needs it with one.
+fn checks_dir_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    args.iter()
+        .position(|arg| arg == "--checks")
+        .and_then(|at| args.get(at + 1))
+        .map(std::path::PathBuf::from)
+}
+
+// The checks are data, read from the application's own `tests/ps-qa/*.ron`
+// at run time. See `qa::checks`.
 
 use inspector::Client;
 
@@ -1376,8 +1370,12 @@ async fn click_named(client: &mut Client, want: &str) -> Result<()> {
 /// wrongly. That mistake is why the hover regression shipped.
 ///
 /// Returns the number of failures, so the caller can set an exit code.
-async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
-    let all = qa::checks();
+async fn run_qa(
+    client: &mut Client,
+    group: Option<&str>,
+    checks_dir: Option<&std::path::Path>,
+) -> Result<usize> {
+    let all = qa::checks(checks_dir).map_err(|error| eyre!(error))?;
     // A group *or* one check's id, so chasing a single failure does not mean
     // re-running its neighbours against the real app every time.
     let selected: Vec<&qa::Check> = all
@@ -1426,7 +1424,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
          * the check cannot find the control it is about.
          */
         let mut open_error = None;
-        if let Some(want) = check.open {
+        if let Some(want) = check.open.as_deref() {
             /*
              * "Already there" is judged by the *click target*, not the subject.
              *
@@ -1436,7 +1434,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
              * The control the check is going to drive is the honest test of
              * whether the surface is in front.
              */
-            let want_here = check.click.unwrap_or(check.subject);
+            let want_here: &str = check.click.as_deref().unwrap_or(&check.subject);
             let (here, _) = inspect(client).await?;
             let arrived = here.nodes.iter().any(|n| {
                 n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
@@ -1485,7 +1483,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
         // Aimed at a node inside the panel column, not merely one whose name
         // matches. Home renders the same control names, so hovering by name
         // alone landed on Home's list and reported the panel's arrows missing.
-        if let Some(want) = check.hover {
+        if let Some(want) = check.hover.as_deref() {
             let target = if check.panel_only {
                 let (tree, _) = inspect(client).await?;
                 tree.nodes
@@ -1504,7 +1502,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
         let mut click_error = None;
-        if let Some(want) = check.click {
+        if let Some(want) = check.click.as_deref() {
             let driven = if check.press {
                 press_named(client, want).await
             } else {
@@ -1525,7 +1523,7 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
              * being driven is how a working control reads as broken, so this
              * is the slow case for everything.
              */
-            settle(client, Some(check.subject)).await?;
+            settle(client, Some(&check.subject)).await?;
         }
 
         let (after, _) = inspect(client).await?;
@@ -2903,7 +2901,10 @@ async fn main() -> Result<()> {
     // reason: requiring a live instance to list the tests is what kept the
     // coverage question unanswerable.
     if mode == "list" {
-        print!("{}", qa::manifest());
+        print!(
+            "{}",
+            qa::manifest(checks_dir_arg(&args).as_deref()).map_err(|error| eyre!(error))?
+        );
         return Ok(());
     }
 
@@ -3306,7 +3307,15 @@ async fn main() -> Result<()> {
         }
         "qa" => {
             let group = args.get(1).map(String::as_str);
-            let failed = run_qa(&mut client, group).await?;
+            // `--checks <dir>` anywhere after the mode, so the common case stays
+            // `ps-qa qa` from the application's own root.
+            let checks_dir = args
+                .iter()
+                .position(|arg| arg == "--checks")
+                .and_then(|at| args.get(at + 1))
+                .map(std::path::PathBuf::from);
+            let group = group.filter(|g| *g != "--checks");
+            let failed = run_qa(&mut client, group, checks_dir.as_deref()).await?;
             if failed > 0 {
                 std::process::exit(1);
             }
