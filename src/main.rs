@@ -2939,6 +2939,20 @@ async fn sweep_modal(
         .first()
         .map(|id| reach::enclosing_dialog(&tree.nodes, *id))
         .unwrap_or_default();
+    if cli::trace() {
+        for node in tree.nodes.iter().filter(|node| {
+            scope.contains(&node.id)
+                && reach::profile()
+                    .deferred_controls
+                    .iter()
+                    .any(|name| node.name.eq_ignore_ascii_case(name))
+        }) {
+            println!(
+                "      [modal] deferred to an outcome check: {:?}",
+                node.name
+            );
+        }
+    }
     let inner: Vec<(u64, String)> = tree
         .nodes
         .iter()
@@ -2947,6 +2961,12 @@ async fn sweep_modal(
         .filter(|n| !dismiss_ids.contains(&n.id))
         .filter(|n| scope.contains(&n.id))
         .filter(|n| !reach::requires_manual_release_check(&n.name))
+        .filter(|n| {
+            !reach::profile()
+                .deferred_controls
+                .iter()
+                .any(|name| n.name.eq_ignore_ascii_case(name))
+        })
         .map(|n| (n.id, n.name.clone()))
         .collect();
 
