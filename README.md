@@ -4,9 +4,10 @@ Drive a running [Blitz](https://github.com/DioxusLabs/blitz) app through its MCP
 control socket and assert what the renderer actually did.
 
 Not a benchmark and not a unit-test runner. It connects to a live application,
-moves a real pointer, and reads back the layout boxes the engine computed — so
-it can tell a control that works from one that is present in the tree, correctly
-named, and `0x0` on screen.
+addresses controls by semantic node id, and reads back the layout boxes the
+engine computed — so it can tell a control that works from one that is present
+in the tree, correctly named, and `0x0` on screen. Explicit pointer commands
+remain available for diagnosing hit-testing itself.
 
 ## Why it exists
 
@@ -42,10 +43,11 @@ The app writes a descriptor when built with its inspector feature:
 }
 ```
 
-`ps-qa` reads `$TAURI_BLITZ_CONTROL_DESCRIPTOR` (falling back to a temp
-directory), checks the pid is live, connects to that Unix socket, and speaks
-**MCP** over it: `initialize`, `tools/list`, then `tools/call` against
-`blitz.agent.control` (drive) and `blitz.diagnostics` (inspect).
+`ps-qa` reads `--descriptor <path>`, or falls back to
+`target/blitz-control.json` and then the newest descriptor advertised in the
+temporary directory. It checks the pid is live, connects to that Unix socket,
+and speaks **MCP** over it: `initialize`, `tools/list`, then `tools/call`
+against `blitz.agent.control` (drive) and `blitz.diagnostics` (inspect).
 
 The framing is length-delimited, **not** newline-delimited and not WebSocket:
 
@@ -182,13 +184,13 @@ supply that, and both belong to the application under test:
 **`ps-qa.ron`** — what the harness cannot infer. The surfaces to sweep and the
 control that opens each, the permanent tabs, the collapsible section headers,
 the prefixes of controls that close or fold something, the region a transcript
-scrolls inside. Found by `--app`, `$PS_QA_APP`, or `ps-qa.ron` in the working
-directory. A profile that does not parse names the file, line and column rather
-than degrading to empty in silence.
+scrolls inside. Found by `--app`, or `ps-qa.ron` in the working directory. A
+profile that does not parse names the file, line and column rather than
+degrading to empty in silence.
 
 **`tests/ps-qa/*.ron`** — the checks. A check is a precondition, an action and
 an assertion with no behaviour of its own, so it is data: editing a selector is
-an edit and a re-run, not a recompile. Found by `--checks`, `$PS_QA_CHECKS`, or
+an edit and a re-run, not a recompile. Found by `--checks`, or
 `tests/ps-qa/`. Files are read in name order, so the group order is the filename
 order.
 

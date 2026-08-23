@@ -622,27 +622,25 @@ pub fn expanders(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// Rows worth hovering, as the point at the middle of each.
+/// Semantic ids of rows worth hovering.
 ///
 /// Row actions do not exist until `pointerenter`, so a sweep that never moves
-/// the pointer cannot see them at all. Hovering the row rather than the control
-/// is the only order that works: the control is not in the tree to be aimed at
-/// until the row it lives in is hovered.
-/// Only rows whose middle is inside the window: a transcript keeps hundreds of
-/// rows at negative coordinates, and moving the pointer to y=-9726 reveals
-/// nothing while costing a round trip each.
-pub fn hover_points(
-    nodes: &[SemanticNode],
-    row_role: &str,
-    window: (f64, f64),
-) -> Vec<(u64, String)> {
+/// over their semantic nodes cannot see them at all. Hovering the row rather
+/// than the control is the only order that works: the control is not in the
+/// tree to be addressed until the row is hovered.
+///
+/// Only rows whose middle is inside the window are returned. A transcript keeps
+/// hundreds of rows at negative coordinates; asking the runtime to hover those
+/// nodes reveals nothing while costing a round trip each. Bounds decide which
+/// semantic ids are eligible, but never become an input action.
+pub fn hover_row_ids(nodes: &[SemanticNode], row_role: &str, window: (f64, f64)) -> Vec<u64> {
     nodes
         .iter()
         .filter(|node| node.role == row_role && onscreen(node))
         .filter_map(|node| {
             let b = node.bounds?;
             let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
-            (y >= window.0 && y <= window.1 && x >= 0.0).then(|| (node.id, format!("{x},{y}")))
+            (y >= window.0 && y <= window.1 && x >= 0.0).then_some(node.id)
         })
         .collect()
 }
@@ -972,9 +970,8 @@ mod tests {
                 Some([10.0, 5000.0, 200.0, 40.0]),
             ),
         ];
-        let points = hover_points(&nodes, "listitem", (0.0, 900.0));
-        assert_eq!(points.len(), 1);
-        assert_eq!(points[0].0, 1);
+        let ids = hover_row_ids(&nodes, "listitem", (0.0, 900.0));
+        assert_eq!(ids, vec![1]);
     }
 
     #[test]
