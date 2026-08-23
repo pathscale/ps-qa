@@ -472,26 +472,40 @@ pub fn verdict(
                 .ok_or_else(|| {
                     format!("no painted node matching {:?} before action", check.subject)
                 })?;
-            let after_node = after
-                .iter()
-                .find(|node| node.id == before_node.id)
-                .ok_or_else(|| format!("node {} disappeared after action", before_node.id))?;
-            let old = before_node.value.as_deref().ok_or_else(|| {
-                format!(
-                    "node {} has no semantic value before action",
-                    before_node.id
-                )
-            })?;
-            let new = after_node.value.as_deref().ok_or_else(|| {
-                format!("node {} has no semantic value after action", after_node.id)
-            })?;
-            if old == new {
-                return Err(format!(
-                    "semantic value for {:?} stayed {:?}",
-                    check.subject, old
-                ));
-            }
+            value_changed(before_node.id, before, after)?;
         }
+    }
+    Ok(())
+}
+
+/// Assert that one exact semantic node changed its exposed value.
+///
+/// The live runner uses this after a named action has already resolved to an
+/// id. Re-resolving by name here would let a neighbouring same-name row decide
+/// the verdict instead of the control that was actually activated.
+pub fn value_changed(
+    node_id: u64,
+    before: &[SemanticNode],
+    after: &[SemanticNode],
+) -> Result<(), String> {
+    let before_node = before
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} was absent before action"))?;
+    let after_node = after
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} disappeared after action"))?;
+    let old = before_node
+        .value
+        .as_deref()
+        .ok_or_else(|| format!("node {node_id} has no semantic value before action"))?;
+    let new = after_node
+        .value
+        .as_deref()
+        .ok_or_else(|| format!("node {node_id} has no semantic value after action"))?;
+    if old == new {
+        return Err(format!("semantic value for node {node_id} stayed {old:?}"));
     }
     Ok(())
 }
@@ -569,7 +583,7 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, Expect, action_description, verdict};
+    use super::{Check, Expect, action_description, value_changed, verdict};
     use blitz_control_protocol::SemanticNode;
 
     fn parse(extra: &str) -> Check {
@@ -637,6 +651,15 @@ mod tests {
         assert!(
             verdict(&check, &[node(7, "0")], &[node(7, "0"), node(8, "1")],).is_err(),
             "a neighbouring repeated control cannot satisfy the check"
+        );
+        assert!(
+            value_changed(
+                8,
+                &[node(7, "0"), node(8, "0")],
+                &[node(7, "1"), node(8, "0")],
+            )
+            .is_err(),
+            "the exact activated id cannot be replaced by a same-name neighbour"
         );
     }
 
