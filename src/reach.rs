@@ -32,55 +32,24 @@ use blitz_control_protocol::SemanticNode;
 
 /// A surface the sweep must visit, named by the control that opens it.
 ///
-/// Home is not reachable by a nav button on every build, so it is addressed by
-/// the tab strip's own entry, which is always present.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Surface {
-    /// Shown in the report.
-    pub name: &'static str,
-    /// The accessible name of the control that navigates here.
-    pub opener: &'static str,
-}
+/// Defined by the application in its profile; this alias keeps the call sites
+/// reading as they did when the list was hardcoded here.
+pub use crate::app::SurfaceSpec as Surface;
 
 /// Every top-level surface, in the order they are swept.
 ///
-/// Home last: it owns the destructive project-row controls, so visiting it
-/// before the others would delete the rows those others are reached through.
+/// Read from the application's profile. The order is the application's to
+/// choose and it matters: AgencyZero puts Home last because Home owns the
+/// destructive project-row controls, so visiting it first would delete the rows
+/// the other surfaces are reached through. A harness cannot know that.
 ///
 /// Every surface names an opener, including the one the app happens to launch
 /// on. An empty opener meant "wherever we already are", which held only until
 /// the first control that changed pane: the run pressed one button, navigated,
 /// and counted the remaining 169 as vanished.
-pub const SURFACES: &[Surface] = &[
-    /*
-     * Project first, because it is the only surface reached by a gesture on
-     * another one's content.
-     *
-     * Its opener is a double click on a Home row, and Home's rows are exactly
-     * what the other surfaces disturb: by the time the sweep had been through
-     * Settings and Analytics the row it wanted was folded, scrolled past, or
-     * below the fold, and the pane went unswept while the report said only
-     * "could not be opened".
-     */
-    Surface {
-        name: "project",
-        // Resolved at run time to the first project tab in the strip: the QA
-        // profile's names are scrubbed, so there is no fixed string to aim at.
-        opener: PROJECT_TAB,
-    },
-    Surface {
-        name: "settings",
-        opener: "Settings",
-    },
-    Surface {
-        name: "analytics",
-        opener: "Analytics",
-    },
-    Surface {
-        name: "home",
-        opener: "Home",
-    },
-];
+pub fn surfaces() -> &'static [crate::app::SurfaceSpec] {
+    &profile().surfaces
+}
 
 /// Stands in for "the first project tab in the strip", resolved when the sweep
 /// runs because the profile's project names are scrubbed and vary per profile.
@@ -117,7 +86,7 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         .filter(|n| n.role == "button" && onscreen(n))
         .filter(|n| !profile().is_permanent(&n.name))
         .find(|n| {
-            doubled(&n.name).is_some_and(|label| !PERMANENT.contains(&label))
+            doubled(&n.name).is_some_and(|label| !profile().is_permanent(label))
                 || closes
                     .iter()
                     .any(|subject| n.name == format!("{subject}{subject}"))
@@ -170,9 +139,6 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         .map(|n| n.name.clone())
 }
 
-/// The surfaces that are always in the strip and are never "the project".
-const PERMANENT: &[&str] = &["Home", "Settings", "Analytics", "HomeHome"];
-
 /// Whether a node is on screen well enough to click.
 ///
 /// Both dimensions, because a control laid out at zero width is one no pointer
@@ -193,12 +159,10 @@ pub fn onscreen(node: &SemanticNode) -> bool {
 /// over-matching here silently drops controls from the sweep, which is the
 /// failure this whole module exists to end.
 pub fn navigates(name: &str) -> bool {
-    const NAV: &[&str] = &["Home", "Settings", "Analytics"];
-    if NAV.iter().any(|entry| {
-        // The tab strip repeats its label ("HomeHome"), so an exact match is
-        // too strict and a `contains` would catch "Close Home".
-        name == *entry || name == format!("{entry}{entry}")
-    }) {
+    // The application's own permanent tabs. `is_permanent` accepts the doubled
+    // form the strip renders ("HomeHome"), which an exact match would miss and a
+    // `contains` would over-match into "Close Home".
+    if profile().is_permanent(name) {
         return true;
     }
     /*
@@ -370,7 +334,7 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
 
 /// The control that only this surface renders.
 fn surface_marker(surface: &Surface) -> Option<&'static str> {
-    match surface.name {
+    match surface.name.as_str() {
         "home" => Some("Cycle Home sort"),
         "settings" => Some("Appearance"),
         "analytics" => Some("Outcome per dollar"),
@@ -882,13 +846,19 @@ mod tests {
 
     #[test]
     fn navigation_is_recognised_without_swallowing_its_neighbours() {
-        // The tab strip doubles its label, which is why an exact match alone
-        // is not enough.
-        assert!(navigates("Home"));
-        assert!(navigates("HomeHome"));
-        assert!(navigates("Settings"));
-        // Project tabs are doubled too, and clicking one leaves the surface:
-        // this is what cost Home 160 controls in a run.
+        /*
+         * The half of `navigates` that needs no profile.
+         *
+         * A document tab is recognised by its doubled label, which is a fact
+         * about how a tab strip renders rather than about any one product's
+         * surfaces. The permanent-tab half is the application's to state, and
+         * is covered by `a_permanent_surface_is_recognised_doubled` in `app`.
+         *
+         * This test used to assert `navigates("Home")` directly, which was this
+         * module knowing one application's tab names.
+         */
+        // Project tabs are doubled, and clicking one leaves the surface: this
+        // is what cost Home 160 controls in a run.
         assert!(navigates("ee"));
         assert!(navigates("delta/east/cobaltdelta/east/cobalt"));
         // A `contains` would catch these, and dropping a Close from the sweep
@@ -899,6 +869,19 @@ mod tests {
         // Not every even-length name is a doubled label.
         assert!(!navigates("Send"));
         assert!(!navigates("Copy"));
+    }
+
+    #[test]
+    fn a_permanent_tab_navigates_when_the_profile_names_it() {
+        // The mechanism, without hardcoding a product: whatever the application
+        // calls its permanent tabs, both the plain and doubled forms navigate.
+        let profile = crate::app::AppProfile {
+            permanent_surfaces: vec!["Dashboard".to_owned()],
+            ..Default::default()
+        };
+        assert!(profile.is_permanent("Dashboard"));
+        assert!(profile.is_permanent("DashboardDashboard"));
+        assert!(!profile.is_permanent("Close Dashboard"));
     }
 
     #[test]

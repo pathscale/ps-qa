@@ -53,11 +53,35 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      # The checks are data compiled into the binary, so a malformed one is a
-      # compile error already. `list` proves they also *load*: it walks every
-      # check and prints it without needing an app, which is the cheapest
-      # possible guard against a group that silently stopped being registered.
-      - name: The checks load
+      # The loader reads an application's checks, and this repository has none:
+      # they belong to the application under test. So the guard is that a
+      # fixture parses and a missing directory fails honestly, which is what
+      # `list` does without needing an app.
+      - name: The check loader works
         run: |
-          cargo run --release -- list | tee /tmp/list.txt
-          grep -qE '[0-9]+ checks in [0-9]+ groups' /tmp/list.txt
+          mkdir -p /tmp/fixture-checks
+          cat > /tmp/fixture-checks/smoke.ron <<'RON'
+          [
+              (
+                  id: "smoke",
+                  group: "smoke",
+                  what: "the loader parses a check",
+                  open: None,
+                  hover: None,
+                  click: None,
+                  press: false,
+                  subject: "button",
+                  expect: Paints,
+                  panel_only: false,
+              ),
+          ]
+          RON
+          cargo run --release -- list --checks /tmp/fixture-checks | tee /tmp/list.txt
+          grep -qE '1 checks in 1 groups' /tmp/list.txt
+
+          # A missing directory must say so rather than report zero checks.
+          if cargo run --release -- list --checks /tmp/definitely-absent 2>/tmp/err.txt; then
+            echo "a missing check directory should have failed" >&2
+            exit 1
+          fi
+          grep -q 'no checks at' /tmp/err.txt
