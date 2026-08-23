@@ -1375,7 +1375,23 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
                  * no-op when already there, and `Home` is always in the tab
                  * strip.
                  */
-                if open_named(client, want).await.is_err() {
+                /*
+                 * A tab is pressed, a row is double clicked, and which one
+                 * this is cannot be known from the name - so try the cheap
+                 * gesture first and escalate.
+                 *
+                 * Double clicking a tab strip entry toggles it rather than
+                 * navigating, and single-pressing a Home row folds it, so
+                 * committing to either gesture broke the other set of checks.
+                 */
+                let _ = press_named(client, want).await;
+                settle(client, None).await?;
+                let (now, _) = inspect(client).await?;
+                let there = now.nodes.iter().any(|n| {
+                    n.name.contains(want_here)
+                        && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                });
+                if !there && open_named(client, want).await.is_err() {
                     let _ = press_named(client, "Home").await;
                     settle(client, None).await?;
                     if let Err(error) = open_named(client, want).await {
