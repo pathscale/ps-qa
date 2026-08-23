@@ -274,15 +274,17 @@ fn confirmation_appeared(before: &[SemanticNode], after: &[SemanticNode]) -> boo
 
 /// A cheap summary of the tree, for "did anything happen".
 ///
-/// Names and roles rather than geometry: a hover highlight or a scroll moves
+/// Semantic names, roles, state and values rather than geometry: a hover highlight or a scroll moves
 /// boxes without the application having done anything, and counting that as a
 /// change would make every button appear to work.
 ///
-/// Visibility is in the summary because plenty of controls do nothing else. The
+/// Visibility, selection and value are in the summary because plenty of controls do nothing else. The
 /// rename pencil swaps a `hidden` class on two already-mounted spans, and with
 /// visibility left out this said "nothing in the tree changed" whether the
 /// editor opened or not - it could not have caught the bug it was pointed at.
-fn tree_fingerprint(nodes: &[SemanticNode]) -> Vec<(String, String, bool, bool)> {
+fn tree_fingerprint(
+    nodes: &[SemanticNode],
+) -> Vec<(String, String, bool, bool, bool, Option<String>)> {
     nodes
         .iter()
         .map(|node| {
@@ -291,6 +293,8 @@ fn tree_fingerprint(nodes: &[SemanticNode]) -> Vec<(String, String, bool, bool)>
                 node.name.clone(),
                 node.enabled,
                 node.visible,
+                node.selected,
+                node.value.clone(),
             )
         })
         .collect()
@@ -359,6 +363,24 @@ mod tests {
         assert_eq!(judge(&case, &before, &after), None);
         // And the failing case the app actually shows: nothing moves at all.
         assert!(judge(&case, &before, &before).is_some());
+    }
+
+    #[test]
+    fn selection_and_value_changes_count_as_acting() {
+        let selected_case = Case {
+            id: 1,
+            name: "Interface size".to_owned(),
+            family: "interface",
+            expect: Expectation::Changes,
+        };
+        let before = vec![button("Interface size")];
+        let mut selected = before.clone();
+        selected[0].selected = true;
+        assert_eq!(judge(&selected_case, &before, &selected), None);
+
+        let mut valued = before.clone();
+        valued[0].value = Some("large".to_owned());
+        assert_eq!(judge(&selected_case, &before, &valued), None);
     }
 
     #[test]
