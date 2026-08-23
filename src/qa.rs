@@ -345,12 +345,23 @@ pub fn verdict(
                 .filter(|node| node.role == role && node.name.contains(name))
                 .find(|node| node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0));
             if hit.is_none() {
-                let present = after
+                let matches: Vec<_> = after
                     .iter()
                     .filter(|node| node.role == role && node.name.contains(name))
-                    .count();
+                    .collect();
+                let state = matches
+                    .iter()
+                    .map(|node| {
+                        format!(
+                            "id={} parent={:?} visible={} bounds={:?}",
+                            node.id, node.parent, node.visible, node.bounds
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 return Err(format!(
-                    "no {role} named {name:?} has a box ({present} in the tree)"
+                    "no {role} named {name:?} has a box ({} in the tree: {state})",
+                    matches.len()
                 ));
             }
         }
