@@ -15,8 +15,8 @@
 //!
 //! # How an application describes itself
 //!
-//! A RON file, found by `--app <path>` or `$PS_QA_APP`, falling back to
-//! `ps-qa.ron` beside the checks. Data rather than code, because the
+//! A RON file, found by `--app <path>` and falling back to `ps-qa.ron` beside
+//! the checks. Data rather than code, because the
 //! application that owns these names does not want to depend on this crate to
 //! state them, and because a name is not worth a recompile.
 //!

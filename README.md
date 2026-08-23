@@ -97,10 +97,13 @@ id, and act on that id. When repeated rows intentionally share an accessible
 name, `click --id` selects the intended row without coordinates.
 
 `inventory` navigates, expands and hovers configured surfaces with semantic
-node-id actions, then counts reachable, unreachable, anonymous and manual
-buttons without activating the buttons being counted. `cover` is the slower,
-mutating sweep used only when every eligible control's activation outcome is
-required.
+node-id actions, then emits every interactive component (buttons, links,
+fields, menus, switches, sliders, tabs, and ARIA equivalents) with its surface,
+role, node id, exact accessible name, and classification. Reachable controls
+remain `reachable-unverified` until an outcome check proves them. Native-dialog
+and external-link exceptions are `excluded-manual`; unreachable or anonymous
+controls are failures. Nothing is silently counted as a pass. `cover` is the
+slower, mutating sweep used when generic activation evidence is useful.
 
 `dom` is usually the fastest way to the answer: a control that writes its state
 but never appears is nearly always a hidden or zero-sized *ancestor*, which the
