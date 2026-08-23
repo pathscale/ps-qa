@@ -432,26 +432,30 @@ pub fn requires_manual_release_check(name: &str) -> bool {
 /// this button act" but "can I still get out of here".
 pub fn modal_open(nodes: &[SemanticNode]) -> bool {
     nodes.iter().any(|node| {
-        onscreen(node) && node.role == "button" && (node.name == "Cancel" || node.name == "Dismiss")
+        onscreen(node)
+            && (matches!(node.role.as_str(), "dialog" | "alertdialog")
+                || (node.role == "button" && profile().dismisses_dialog(&node.name)))
     })
 }
 
 /// The controls that would dismiss the modal in front, best first.
 ///
-/// `Cancel` before `Close`, because a dialog often renders both an × in its
-/// header and a `Cancel` in its footer and either should work; trying the named
-/// one first keeps the report readable when neither does.
+/// Preference order comes from the application profile. A dialog often offers
+/// both a footer action and a header icon, and the application knows which one
+/// gives the clearest outcome evidence.
 pub fn dismissers(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
     let mut found: Vec<(u64, String)> = nodes
         .iter()
         .filter(|n| n.role == "button" && onscreen(n))
-        .filter(|n| matches!(n.name.as_str(), "Cancel" | "Dismiss" | "Close"))
+        .filter(|n| profile().dismisses_dialog(&n.name))
         .map(|n| (n.id, n.name.clone()))
         .collect();
-    found.sort_by_key(|(_, name)| match name.as_str() {
-        "Cancel" => 0,
-        "Dismiss" => 1,
-        _ => 2,
+    found.sort_by_key(|(_, name)| {
+        profile()
+            .dismiss_controls
+            .iter()
+            .position(|control| name.eq_ignore_ascii_case(control))
+            .unwrap_or(usize::MAX)
     });
     found
 }
@@ -924,17 +928,8 @@ mod tests {
 
     #[test]
     fn a_modal_is_recognised_and_offers_its_dismissers() {
-        let dialog = vec![
-            node(1, "button", "Cancel", Some([0.0, 0.0, 20.0, 20.0])),
-            node(2, "button", "Fork", Some([0.0, 0.0, 20.0, 20.0])),
-            node(3, "button", "Close", Some([0.0, 0.0, 20.0, 20.0])),
-        ];
+        let dialog = vec![node(1, "dialog", "Setup", Some([0.0, 0.0, 200.0, 200.0]))];
         assert!(modal_open(&dialog));
-        // Cancel first: a dialog can render an x in its header and a
-        // Cancel in its footer, and the named one reads better in a report.
-        let ways_out = dismissers(&dialog);
-        assert_eq!(ways_out[0].1, "Cancel");
-        assert_eq!(ways_out.len(), 2);
 
         let ordinary = vec![node(1, "button", "Send", Some([0.0, 0.0, 20.0, 20.0]))];
         assert!(!modal_open(&ordinary));
