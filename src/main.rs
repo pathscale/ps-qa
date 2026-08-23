@@ -1375,10 +1375,10 @@ async fn run_qa(client: &mut Client, group: Option<&str>) -> Result<usize> {
                  * no-op when already there, and `Home` is always in the tab
                  * strip.
                  */
-                if press_named(client, want).await.is_err() {
+                if open_named(client, want).await.is_err() {
                     let _ = press_named(client, "Home").await;
                     settle(client, None).await?;
-                    if let Err(error) = press_named(client, want).await {
+                    if let Err(error) = open_named(client, want).await {
                         open_error = Some(format!("could not open {want:?}: {error}"));
                     }
                 }
@@ -1529,6 +1529,34 @@ async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Double click the first visible match, for reaching a surface.
+///
+/// A Home row folds on a single click and opens on a double, and two separate
+/// `press` calls are not a double click: each round-trips through the
+/// inspector, so they land hundreds of milliseconds apart and the row folds
+/// there and back. Navigation that used single presses appeared to work only
+/// when the surface happened to be open already, which is why checks failed
+/// with "no visible, enabled, sized button" for controls one gesture away.
+async fn open_named(client: &mut Client, want: &str) -> Result<()> {
+    let (snapshot, _) = inspect(client).await?;
+    let wanted = want.to_lowercase();
+    let Some(node) = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.role == "button")
+        .filter(|n| n.name.to_lowercase().contains(&wanted))
+        .filter(|n| n.visible && n.enabled)
+        .find(|n| n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
+    else {
+        bail!("no visible, enabled, sized button matching it");
+    };
+    let b = node.bounds.unwrap();
+    if std::env::var_os("QA_TRACE").is_some() {
+        println!("        opening {:?} (id {})", node.name, node.id);
+    }
+    double_click_at(client, b[0] + b[2] / 2.0, b[1] + b[3] / 2.0).await
 }
 
 /// Move, press and release over the first visible match, for the QA runner.

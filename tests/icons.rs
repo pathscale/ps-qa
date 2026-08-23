@@ -18,7 +18,7 @@ pub fn checks() -> Vec<Check> {
             id: "icons-paint",
             group: "icons",
             what: "icon nodes occupy a box on screen",
-            open: Some("delta/east/cobalt"),
+            open: Some("alpha sigma omega west"),
             hover: None,
             click: None,
             subject: "presentation",

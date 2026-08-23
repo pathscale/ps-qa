@@ -104,7 +104,7 @@ pub fn checks() -> Vec<Check> {
             // Depending on the previous check having left the surface open
             // would make this pass or fail on run order rather than on the
             // control.
-            open: Some("eno working directory"),
+            open: Some("alpha sigma omega west"),
             hover: None,
             click: Some("Rename project"),
             press: true,
