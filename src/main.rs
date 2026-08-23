@@ -1908,7 +1908,11 @@ fn offscreen(bounds: [f64; 4], viewport: (f64, f64)) -> bool {
 ///
 /// Returns the node id and its box *after* any scroll, because the coordinates
 /// the caller presses at must be the ones the renderer just settled on.
-async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4])> {
+async fn locate_control(
+    client: &mut Client,
+    want: &str,
+    roles: &[&str],
+) -> Result<(u64, [f64; 4])> {
     let wanted = want.to_lowercase();
     /*
      * An on-screen match wins over an earlier off-screen one.
@@ -1936,7 +1940,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         let candidates: Vec<_> = snapshot
             .nodes
             .iter()
-            .filter(|n| n.role == "button")
+            .filter(|n| roles.contains(&n.role.as_str()))
             .filter(|n| n.name.to_lowercase().contains(&wanted))
             .filter(|n| n.visible && n.enabled)
             .filter_map(|node| {
@@ -2064,6 +2068,10 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
     )
 }
 
+async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4])> {
+    locate_control(client, want, &["button"]).await
+}
+
 /// Double click the first visible match, for reaching a surface.
 ///
 /// A document row may fold on a single click and open on a double; two separate
@@ -2124,11 +2132,16 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
 
 /// `click_named` without the metrics report, for the QA runner's inner loop.
 async fn click_named_quiet(client: &mut Client, want: &str) -> Result<()> {
-    // Resolve through the same painted, on-screen button path as navigation.
+    // Resolve through the same painted, on-screen semantic path as navigation.
     // `visible` alone is insufficient: retained subtrees can expose an old
     // semantic node at 0x0, and activating that id reports a working control
     // dead while its current painted replacement remains untouched.
-    let (target_id, _) = locate_button(client, want).await?;
+    let (target_id, _) = locate_control(
+        client,
+        want,
+        &["button", "checkbox", "switch", "slider", "tab"],
+    )
+    .await?;
     if cli::trace() {
         println!("        activating {want:?} (id {target_id})");
     }
