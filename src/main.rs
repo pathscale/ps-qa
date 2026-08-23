@@ -2463,6 +2463,126 @@ async fn hover_all_rows(client: &mut Client) -> Result<usize> {
     Ok(revealed)
 }
 
+/// Inventory semantic reachability across every configured application
+/// surface without pressing the controls being counted.
+///
+/// `cover` answers a different and much more expensive question: it activates
+/// every eligible button and performs multiple full-tree reads per button.
+/// An agent asking which components are unreachable should not pay that cost or
+/// mutate the profile merely to obtain counts. Navigation, disclosure expansion
+/// and hover are still necessary preconditions, and all three are node-id
+/// actions.
+async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize> {
+    #[derive(serde::Serialize)]
+    struct SurfaceRow {
+        surface: String,
+        opened: bool,
+        buttons: usize,
+        reachable: usize,
+        unreachable: usize,
+        anonymous: usize,
+        manual: usize,
+        sections_opened: usize,
+        rows_hovered: usize,
+    }
+
+    #[derive(serde::Serialize)]
+    struct InventoryReport {
+        buttons: usize,
+        reachable: usize,
+        unreachable: usize,
+        anonymous: usize,
+        manual: usize,
+        surfaces: Vec<SurfaceRow>,
+    }
+
+    let mut rows = Vec::new();
+    for surface in reach::surfaces() {
+        if only.is_some_and(|want| want != surface.name) {
+            continue;
+        }
+        if !open_surface(client, surface).await? {
+            rows.push(SurfaceRow {
+                surface: surface.name.clone(),
+                opened: false,
+                buttons: 0,
+                reachable: 0,
+                unreachable: 0,
+                anonymous: 0,
+                manual: 0,
+                sections_opened: 0,
+                rows_hovered: 0,
+            });
+            continue;
+        }
+
+        let sections_opened = expand_everything(client, surface).await?;
+        if !open_surface(client, surface).await? {
+            rows.push(SurfaceRow {
+                surface: surface.name.clone(),
+                opened: false,
+                buttons: 0,
+                reachable: 0,
+                unreachable: 0,
+                anonymous: 0,
+                manual: 0,
+                sections_opened,
+                rows_hovered: 0,
+            });
+            continue;
+        }
+        let rows_hovered = hover_all_rows(client).await?;
+        let (tree, _) = inspect(client).await?;
+        let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
+            .into_iter()
+            .collect();
+        let buttons: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|node| node.role == "button" && mine.contains(&node.id))
+            .collect();
+        let reachable = buttons
+            .iter()
+            .filter(|node| reach::onscreen(node) && node.enabled)
+            .count();
+        let unreachable = buttons.len() - reachable;
+        let anonymous = buttons
+            .iter()
+            .filter(|node| node.name.trim().is_empty())
+            .count();
+        let manual = buttons
+            .iter()
+            .filter(|node| reach::requires_manual_release_check(&node.name))
+            .count();
+        rows.push(SurfaceRow {
+            surface: surface.name.clone(),
+            opened: true,
+            buttons: buttons.len(),
+            reachable,
+            unreachable,
+            anonymous,
+            manual,
+            sections_opened,
+            rows_hovered,
+        });
+    }
+
+    let report = InventoryReport {
+        buttons: rows.iter().map(|row| row.buttons).sum(),
+        reachable: rows.iter().map(|row| row.reachable).sum(),
+        unreachable: rows.iter().map(|row| row.unreachable).sum(),
+        anonymous: rows.iter().map(|row| row.anonymous).sum(),
+        manual: rows.iter().map(|row| row.manual).sum(),
+        surfaces: rows,
+    };
+    let failures = report.unreachable + report.anonymous;
+    println!(
+        "{}",
+        toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
+    );
+    Ok(failures)
+}
+
 /// Navigate to a surface, and say whether it opened.
 async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<bool> {
     if surface.opener.is_empty() {
@@ -3588,6 +3708,12 @@ async fn main() -> Result<()> {
         }
         cli::Command::Cover { surface } => {
             let failures = run_cover(&mut client, surface.as_deref()).await?;
+            if failures > 0 {
+                std::process::exit(1);
+            }
+        }
+        cli::Command::Inventory { surface } => {
+            let failures = run_inventory(&mut client, surface.as_deref()).await?;
             if failures > 0 {
                 std::process::exit(1);
             }
