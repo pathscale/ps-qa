@@ -557,6 +557,55 @@ async fn spill(client: &mut Client, axis: &str, tolerance: f64) -> Result<()> {
         String::from("(no named ancestor)")
     };
 
+    /*
+     * A scroller's own offset, so scrolled-away content is not called a spill.
+     *
+     * Without this the tab strip reported eight children up to 1,375px left of
+     * their parent, which reads as a serious layout break and is nothing at
+     * all: `scroll=1186.0` against `content=2068.1` and `client=855.2` means
+     * they are scrolled out of view exactly as intended. A tool that reports
+     * normal scrolling as breakage costs an afternoon per reader.
+     */
+    let scroll_of: HashMap<u64, (f64, f64)> = {
+        // A second call: the semantic snapshot carries geometry but not scroll
+        // state, which only the layout snapshot has.
+        let answer = client
+            .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
+                include_dom: false,
+                include_layout: true,
+                include_computed_style: false,
+            }))
+            .await?;
+        match answer.response {
+            DebugResponse::Snapshot(layout) => layout
+                .layout
+                .as_ref()
+                .and_then(|value| value.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            let id = row.get("nodeId")?.as_u64()?;
+                            // The *range*, not the offset. A container that can
+                            // scroll on an axis is one whose content is meant to
+                            // exceed its box on that axis, whether or not it
+                            // happens to be scrolled right now.
+                            let range = row.get("scrollRange")?;
+                            let x = range.get(0)?.as_f64()?;
+                            let y = range.get(1)?.as_f64()?;
+                            Some((id, (x, y)))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            // Without offsets this reports scrolled content as spill, which is
+            // wrong but not silently wrong: say so rather than pretend.
+            _ => {
+                eprintln!("no layout snapshot: scrolled content may read as spill");
+                HashMap::new()
+            }
+        }
+    };
+
     let vertical = axis.starts_with('v') || axis.starts_with('a');
     let mut by_owner: HashMap<String, (usize, f64)> = HashMap::new();
     let mut rows: Vec<(f64, String)> = Vec::new();
@@ -567,16 +616,27 @@ async fn spill(client: &mut Client, axis: &str, tolerance: f64) -> Result<()> {
         let Some(parent) = boxes.get(&parent_id) else {
             continue;
         };
+        // A container that scrolls on this axis is one whose content is
+        // *supposed* to exceed its box on that axis, so nothing inside it can
+        // have escaped. Judging it anyway reported the tab strip's eight
+        // offscreen tabs as a 1,375px layout break.
+        let (range_x, range_y) = scroll_of.get(&parent_id).copied().unwrap_or((0.0, 0.0));
         // A zero-sized parent is a node that has not been laid out, not a
         // container something escaped from.
         if parent[2] <= 0.0 || parent[3] <= 0.0 || child[2] <= 0.0 {
             continue;
         }
-        let left = parent[0] - child[0];
-        let right = (child[0] + child[2]) - (parent[0] + parent[2]);
-        let mut worst = left.max(right);
-        let mut how = if right >= left { "right" } else { "left" };
-        if vertical {
+        let scrolls_x = range_x > 0.5;
+        let scrolls_y = range_y > 0.5;
+        let mut worst = f64::NEG_INFINITY;
+        let mut how = "right";
+        if !scrolls_x {
+            let left = parent[0] - child[0];
+            let right = (child[0] + child[2]) - (parent[0] + parent[2]);
+            worst = left.max(right);
+            how = if right >= left { "right" } else { "left" };
+        }
+        if vertical && !scrolls_y {
             let top = parent[1] - child[1];
             let bottom = (child[1] + child[3]) - (parent[1] + parent[3]);
             if top > worst {
