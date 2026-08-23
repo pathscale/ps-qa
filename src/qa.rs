@@ -486,20 +486,7 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
             current = check.group.clone();
             out.push_str(&format!("\n{current}\n"));
         }
-        let mut action = match (&check.hover, &check.click, check.press) {
-            (Some(h), Some(c), true) => format!("hover {h:?}, press {c:?}"),
-            (Some(h), Some(c), false) => format!("hover {h:?}, activate {c:?}"),
-            (Some(h), None, _) => format!("hover {h:?}"),
-            (None, Some(c), true) => format!("press {c:?}"),
-            (None, Some(c), false) => format!("activate {c:?}"),
-            (None, None, _) => "observe only".to_owned(),
-        };
-        if let (Some(key), Some(target)) = (
-            &check.key,
-            check.key_on.as_ref().or(check.type_into.as_ref()),
-        ) {
-            action.push_str(&format!(", key {key:?} on {target:?}"));
-        }
+        let action = action_description(check);
         out.push_str(&format!(
             "  {:<26} {}\n{:<29}{} -> {:?} {:?}\n",
             check.id, check.what, "", action, check.expect, check.subject
@@ -511,6 +498,35 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
         groups.len()
     }));
     Ok(out)
+}
+
+fn action_description(check: &Check) -> String {
+    let mut action = match (&check.hover, &check.click, check.press) {
+        (Some(h), Some(c), true) => format!("hover {h:?}, press {c:?}"),
+        (Some(h), Some(c), false) => format!("hover {h:?}, activate {c:?}"),
+        (Some(h), None, _) => format!("hover {h:?}"),
+        (None, Some(c), true) => format!("press {c:?}"),
+        (None, Some(c), false) => format!("activate {c:?}"),
+        (None, None, _) => "observe only".to_owned(),
+    };
+    if let Some(field) = check.type_into.as_deref() {
+        let typed = check.text.as_deref().map_or_else(
+            || format!("focus {field:?}"),
+            |value| format!("type {value:?} into {field:?}"),
+        );
+        if action == "observe only" {
+            action = typed;
+        } else {
+            action.push_str(&format!(", {typed}"));
+        }
+    }
+    if let (Some(key), Some(target)) = (
+        &check.key,
+        check.key_on.as_ref().or(check.type_into.as_ref()),
+    ) {
+        action.push_str(&format!(", key {key:?} on {target:?}"));
+    }
+    action
 }
 
 /// Count matching nodes per group, for the summary line.
@@ -528,7 +544,7 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, Expect, verdict};
+    use super::{Check, Expect, action_description, verdict};
     use blitz_control_protocol::SemanticNode;
 
     fn parse(extra: &str) -> Check {
@@ -555,6 +571,10 @@ mod tests {
         assert_eq!(check.text.as_deref(), Some("latest fixture"));
         assert_eq!(check.key.as_deref(), Some("Enter"));
         assert_eq!(check.compare.as_deref(), Some("older"));
+        assert_eq!(
+            action_description(&check),
+            "activate \"Save\", type \"latest fixture\" into \"New record\", key \"Enter\" on \"New record\""
+        );
     }
 
     #[test]
