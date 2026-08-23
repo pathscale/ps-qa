@@ -1947,7 +1947,9 @@ async fn locate_control(
         let candidates: Vec<_> = snapshot
             .nodes
             .iter()
-            .filter(|n| roles.contains(&n.role.as_str()))
+            .filter(|n| {
+                roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
+            })
             .filter(|n| n.name.to_lowercase().contains(&wanted))
             .filter(|n| n.visible && n.enabled)
             .filter_map(|node| {
@@ -2143,12 +2145,7 @@ async fn click_named_quiet(client: &mut Client, want: &str) -> Result<u64> {
     // `visible` alone is insufficient: retained subtrees can expose an old
     // semantic node at 0x0, and activating that id reports a working control
     // dead while its current painted replacement remains untouched.
-    let (target_id, _) = locate_control(
-        client,
-        want,
-        &["button", "checkbox", "switch", "slider", "tab"],
-    )
-    .await?;
+    let (target_id, _) = locate_control(client, want, &[]).await?;
     if cli::trace() {
         println!("        activating {want:?} (id {target_id})");
     }

@@ -130,8 +130,9 @@ A check is a precondition, an action, and an assertion about the state after it:
 
 Omitting `press` is deliberate and selects semantic node activation. Set
 `press: true` only when a suite explicitly tests coordinate hit-testing.
-`click` resolves painted buttons, checkboxes, switches, sliders and tabs by
-accessible name, then activates the exact semantic node id.
+`click` resolves every painted interactive semantic role by accessible name,
+including buttons, menu items, options, checkboxes, switches, sliders and
+tabs, then activates the exact semantic node id.
 
 | Expectation | Passes when |
 | --- | --- |
