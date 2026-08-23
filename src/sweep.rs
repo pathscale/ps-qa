@@ -4,7 +4,7 @@
 //!
 //! The audit next door measures what a control *shows*. That is not what a
 //! button is for. A `Delete` that paints perfectly and deletes nothing is a
-//! working picture of a broken feature, and the owner asked, correctly and more
+//! working picture of a broken feature, and a user asked, correctly and more
 //! than once, for the thing that presses them.
 //!
 //! So this presses them. Against a throwaway profile, so a destructive control
@@ -151,7 +151,7 @@ pub fn expectation_for(name: &str) -> Expectation {
 
 /// Buttons worth clicking, in the order they appear.
 ///
-/// Only visible, enabled, named buttons with a box: a control the owner cannot
+/// Only visible, enabled, named buttons with a box: a control a person cannot
 /// reach is not one whose behaviour can be asserted, and pressing it would test
 /// the harness rather than the application.
 pub fn cases(
@@ -253,7 +253,7 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
              * Its own "Copied" feedback is not a document change.
              *
              * A copy control flips a label or shows a tick for a second, which
-             * is the only way the owner knows it worked. Once visibility joined
+             * is the only way a person knows it worked. Once visibility joined
              * the fingerprint - needed to catch controls that only reveal
              * something - that feedback started reading as a violation, and
              * every `Copy` in the app was reported for mutating the document

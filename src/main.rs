@@ -26,111 +26,23 @@ use eyre::{Result, bail, eyre};
 
 mod app;
 mod audit;
+mod cli;
 mod inspector;
 mod qa;
 mod reach;
 mod report;
 mod sweep;
-/// `--checks <dir>`, wherever it appears after the mode.
-///
-/// Returned rather than parsed once, because `list` needs it without a running
-/// app and `qa` needs it with one.
-fn checks_dir_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    args.iter()
-        .position(|arg| arg == "--checks")
-        .and_then(|at| args.get(at + 1))
-        .map(std::path::PathBuf::from)
-}
-
 // The checks are data, read from the application's own `tests/ps-qa/*.ron`
 // at run time. See `qa::checks`.
 
 use inspector::Client;
-
-const USAGE: &str = "\
-usage: ps-qa <mode> [args]
-
-  nodes                       tree size and a role histogram
-  panes                       node count per retained pane, and what
-                              retention costs against the whole tree
-  idle                        one metrics read, as a frame-window summary
-  blink [allowed-missed]      assert the owner's blinking-rectangle repro: no
-                              missed refreshes and no frame interval past two
-                              refresh periods. Exits 1 when the blink is present
-  ghost [min-area] [max]      hidden nodes that still own a painted box, worst
-                              first. Retention keeps some on purpose, so this
-                              exits 1 only past a budget (default 64px2, 400)
-  drift [seconds]             what the app does while nothing happens (default 20)
-  frames                      one metrics read, laid out for reading
-  metrics                     the raw metrics response
-  tree                        the semantic tree
-  layout [name-substr]        live boxes: x, y, w, h per named node
-  dom <substr> [depth]        matching nodes with their attributes, plus the
-                              ancestor chain, so a spill can be read against the
-                              container that was meant to clip it (default 6)
-  transcript                  transcript scroll state and lowest DOM descendants
-  paint [name-substr] [min-area]  the colours the renderer resolved per node,
-                              biggest box first, so a full-window wash names the
-                              element that asked for it (default 10000px2)
-  spill [h|v] [tolerance]     boxes that stick out of their container, worst first
-  watch [seconds]             stream metrics/console/runtimeErrors (default 20)
-  scroll [ticks] [delta] [over]  wheel events over a named node (default 120 -80 Conversation)
-  drag [name-substr] [dy] [n]    scroll a named node's container directly, n times
-  type [count] [name-substr]  drive real keystrokes into a text field (default 20)
-  key <name> [count] [over]   pageup/pagedown/home/end/up/down/left/right/tab into a
-                              named scroller, or into a bare node id
-  reveal <name-substr>        scroll a named node into view, reporting its y before/after
-  capture [name-substr] [scale]  render what the app actually drew and report the
-                              visible ink in it. The whole window, or one named
-                              node. This is the only mode that can tell a drawn
-                              control from a blank box: every other reading here
-                              comes from the tree, where the two are identical
-  press <name-substring>      move, press and release a real pointer over the
-                              first match, which is the path a person's mouse
-                              takes. `click` synthesises an event at a node id
-                              instead, so when the owner reports a control
-                              working that the sweep calls dead, this is what
-                              tells the two apart
-  click <name-substring>      click the first matching visible, enabled node
-  audit [family]              every button in the running app, measured against
-                              what the renderer drew for it. Reports the ones
-                              the owner cannot see. Exits 1 on any fault.
-                              Families: close delete add edit disclosure copy
-                              reorder run status fork reply attach clear other
-  sweep [family]              CLICK every button and check it did what its name
-                              says: a Collapse becomes an Expand, a Delete
-                              removes its row, a Copy changes nothing. Point
-                              AZ_DATA_DIR at a throwaway profile first, because
-                              this presses destructive controls on purpose.
-                              Exits 1 on any button that did not act
-  cover [surface]             sweep EVERY surface, not just the one the app
-                              opened on: navigates project/settings/analytics/
-                              home, expands what is collapsed and hovers every
-                              row first, then clicks what that reveals. Reports
-                              what it could not reach instead of skipping it, so
-                              coverage is a number rather than silence.
-                              Surfaces: project settings analytics home
-  qa [group] [--toon]         drive every panel control and check what the
-                              renderer did with it: icons paint, hover reveals
-                              the row actions, a status click does not remove
-                              the row, revealing adds rows. Exits 1 on any
-                              failure. Groups: icons hover status sections tasklog
-
-env:
-  TAURI_BLITZ_CONTROL_DESCRIPTOR  the descriptor to attach to
-  BENCH_PACE                      inter-event delay in seconds, 0 saturates
-";
 
 /// Inter-event delay. **Leave it at 0 when measuring a ceiling.** At the 1/60
 /// default the harness sets the cadence and the reported frame interval
 /// describes the harness rather than the application: that mistake produced
 /// "49fps" on a build that actually did 308fps.
 fn pace() -> Duration {
-    let seconds = std::env::var("BENCH_PACE")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .unwrap_or(1.0 / 60.0);
-    Duration::from_secs_f64(seconds.max(0.0))
+    Duration::from_secs_f64(cli::pace().max(0.0))
 }
 
 async fn sleep_pace() {
@@ -685,7 +597,7 @@ async fn spill(client: &mut Client, axis: &str, tolerance: f64) -> Result<()> {
     // Parent-relative overflow is blind to the case where a box and every
     // ancestor up to the pane are all too wide together: each one fits inside
     // the next and nothing reports. So also measure everything against the
-    // transcript itself, which is the edge the owner can see.
+    // transcript itself, which is the edge a person can see.
     if let Some((pane, pane_box)) = snapshot
         .nodes
         .iter()
@@ -914,7 +826,7 @@ async fn nodes(client: &mut Client) -> Result<usize> {
 /// `RETAINED_PROJECT_LIMIT` keeps eight project panes mounted, and a hidden
 /// pane is a full DOM subtree: it is invisible, not absent. Nobody had priced
 /// one, so this walks every node to its nearest `data-retained-*` ancestor and
-/// totals the subtree. The visible pane is the one the owner is looking at;
+/// totals the subtree. The visible pane is the one a person is looking at;
 /// every other line is what retention is charging for.
 async fn panes(client: &mut Client) -> Result<()> {
     let (snapshot, elapsed) = inspect(client).await?;
@@ -924,8 +836,9 @@ async fn panes(client: &mut Client) -> Result<()> {
     // The semantic snapshot carries no `data-*` attributes, so a pane cannot be
     // named by the attribute the shell stamps on it. It can still be found by
     // shape: a pane is a subtree hanging off a shared shell ancestor, and each
-    // one contains exactly one "Conversation" region. Anchoring on that names
-    // panes without needing new server surface.
+    // one contains exactly one of the region the profile names as its
+    // transcript. Anchoring on that names panes without needing new server
+    // surface.
     // The application names its own; a profile without one gets no pane report.
     let anchor = reach::profile()
         .transcript_region
@@ -1192,7 +1105,7 @@ fn find_text_field<'a>(nodes: &'a [SemanticNode], want: &str) -> Option<&'a Sema
 /// Wheel events could not scroll the transcript: they carry no coordinates, and
 /// pointing them at the pane still moved nothing. Page Up does, because it goes
 /// to the focused scroller, and without it every attempt to reach the rows the
-/// owner was looking at meant asking the owner to scroll. A bug that only
+/// owner was looking at meant asking a person to scroll. A bug that only
 /// reproduces by hand is a bug that gets one measurement per message.
 async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) -> Result<()> {
     // A key goes to the focused node, so click the container first. Clicking a
@@ -1388,7 +1301,6 @@ async fn run_qa(
     client: &mut Client,
     group: Option<&str>,
     checks_dir: Option<&std::path::Path>,
-    toon: bool,
 ) -> Result<usize> {
     let all = qa::checks(checks_dir).map_err(|error| eyre!(error))?;
     // A group *or* one check's id, so chasing a single failure does not mean
@@ -1409,12 +1321,6 @@ async fn run_qa(
         );
     }
 
-    if !toon {
-        println!(
-            "panel QA: {} checks against the running app\n",
-            selected.len()
-        );
-    }
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
 
     for check in selected {
@@ -1550,13 +1456,6 @@ async fn run_qa(
             Some(error) => Err(error),
             None => qa::verdict(check, &before.nodes, &after.nodes),
         };
-        if !toon {
-            let mark = if outcome.is_ok() { "PASS" } else { "FAIL" };
-            println!("  {mark}  [{}] {}", check.group, check.what);
-            if let Err(error) = &outcome {
-                println!("        {error}");
-            }
-        }
         results.push((check, outcome));
     }
 
@@ -1590,41 +1489,24 @@ async fn run_qa(
      * silently. The crate is generic over `serde::Serialize`, so anything with
      * a `Serialize` impl encodes without a bespoke path.
      */
-    if toon {
-        let report = serde_json::json!({
-            "passed": results.len() - failed,
-            "failed": failed,
-            "groups": groups
-                .iter()
-                .map(|(name, (passed, total))| serde_json::json!({
-                    "name": name,
-                    "passed": passed,
-                    "total": total,
-                }))
-                .collect::<Vec<_>>(),
-            "checks": results
-                .iter()
-                .map(|(check, outcome)| serde_json::json!({
-                    "verdict": if outcome.is_ok() { "pass" } else { "fail" },
-                    "group": check.group,
-                    "id": check.id,
-                    "error": outcome.as_ref().err().map_or("", |e| e.as_str()),
-                    "what": check.what,
-                }))
-                .collect::<Vec<_>>(),
-        });
-        println!(
-            "{}",
-            toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
-        );
-        return Ok(failed);
-    }
 
-    println!();
-    for (name, (passed, total)) in groups {
-        println!("  {name:<10} {passed}/{total}");
-    }
-    println!("\n{} passed, {failed} failed", results.len() - failed);
+    let report = Report {
+        passed: results.len() - failed,
+        failed,
+        groups: groups
+            .into_iter()
+            .map(|(name, (passed, total))| GroupRow {
+                name: name.to_string(),
+                passed: *passed,
+                total: *total,
+            })
+            .collect(),
+        checks: results.iter().map(CheckRow::from).collect(),
+    };
+    println!(
+        "{}",
+        toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
+    );
     Ok(failed)
 }
 
@@ -1696,6 +1578,49 @@ async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A finished run, as a machine reads it.
+///
+/// Serialized rather than printed field by field: `toon-format` is generic over
+/// `serde::Serialize`, so the shape below *is* the output format, and there is
+/// no second hand-written description of it to drift.
+#[derive(serde::Serialize)]
+struct Report {
+    passed: usize,
+    failed: usize,
+    groups: Vec<GroupRow>,
+    checks: Vec<CheckRow>,
+}
+
+#[derive(serde::Serialize)]
+struct GroupRow {
+    name: String,
+    passed: usize,
+    total: usize,
+}
+
+/// One check's outcome. Uniform, so TOON emits it as a table: the field names
+/// are declared once and each check costs a single line.
+#[derive(serde::Serialize)]
+struct CheckRow {
+    verdict: &'static str,
+    group: String,
+    id: String,
+    error: String,
+    what: String,
+}
+
+impl From<&(&qa::Check, std::result::Result<(), String>)> for CheckRow {
+    fn from((check, outcome): &(&qa::Check, std::result::Result<(), String>)) -> Self {
+        Self {
+            verdict: if outcome.is_ok() { "pass" } else { "fail" },
+            group: check.group.clone(),
+            id: check.id.clone(),
+            error: outcome.clone().err().unwrap_or_default(),
+            what: check.what.clone(),
+        }
+    }
 }
 
 /// The viewport, read from the tree rather than assumed.
@@ -1788,7 +1713,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         return Ok((id, bounds));
     }
 
-    if std::env::var_os("QA_TRACE").is_some() {
+    if cli::trace() {
         println!("        {want:?} is off-screen at {bounds:?}, scrolling it in");
     }
     client
@@ -1821,7 +1746,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
 /// with "no visible, enabled, sized button" for controls one gesture away.
 async fn open_named(client: &mut Client, want: &str) -> Result<()> {
     let (id, b) = locate_button(client, want).await?;
-    if std::env::var_os("QA_TRACE").is_some() {
+    if cli::trace() {
         println!("        opening {want:?} (id {id})");
     }
     double_click_at(client, b[0] + b[2] / 2.0, b[1] + b[3] / 2.0).await
@@ -1848,7 +1773,7 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
      */
     let (id, b) = locate_button(client, want).await?;
     let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
-    if std::env::var_os("QA_TRACE").is_some() {
+    if cli::trace() {
         println!("        pressing {want:?} (id {id}) at {x:.0},{y:.0}");
     }
     // Move first: hover state gates some controls, and a press at a point the
@@ -2130,7 +2055,7 @@ async fn run_audit(client: &mut Client, family: Option<&str>) -> Result<usize> {
     if faults.is_empty() {
         println!("no faults: every visible button was painted");
     } else {
-        println!("{} button(s) the owner cannot see:\n", faults.len());
+        println!("{} button(s) nobody can see:\n", faults.len());
         for row in &faults {
             println!(
                 "  {:<8} {:<52} {:.0}x{:.0}",
@@ -2155,7 +2080,7 @@ async fn run_audit(client: &mut Client, family: Option<&str>) -> Result<usize> {
 
 /// The nodes the renderer resolved and drew, from one paint snapshot.
 ///
-/// A button absent from this was not painted, which is what "the owner cannot
+/// A button absent from this was not painted, which is what "a person cannot
 /// see it" means. Asked once for the whole window rather than per control.
 async fn painted_nodes(client: &mut Client) -> Result<HashSet<u64>> {
     let answer = client
@@ -2254,7 +2179,7 @@ async fn run_sweep(client: &mut Client, family: Option<&str>) -> Result<usize> {
         }
         // Long enough for a synchronous handler and its re-render. A backend
         // round trip is slower, and a button that only fails under that delay
-        // is reported rather than waited for: the owner sees the same thing.
+        // is reported rather than waited for: a person sees the same thing.
         tokio::time::sleep(Duration::from_millis(250)).await;
 
         let (after, _) = inspect(client).await?;
@@ -2335,7 +2260,7 @@ async fn expand_everything(client: &mut Client, surface: &reach::Surface) -> Res
 
 /// Hover every row on the surface, so hover-revealed controls enter the tree.
 ///
-/// The row controls the owner asked about - rename, delete, pin - do not exist
+/// The row controls users asked about - rename, delete, pin - do not exist
 /// until `pointerenter`. Hovering is what puts them in the tree at all, so this
 /// runs before the plan is made rather than per-click.
 async fn hover_all_rows(client: &mut Client) -> Result<usize> {
@@ -2533,7 +2458,7 @@ async fn sweep_modal(
      * still sized, exactly as a retained pane does. Sweeping everything on
      * screen meant the fork dialog's pass pressed `HomeHome`, `Settings`,
      * `Attach files` and the whole composer - none of which are in the dialog,
-     * and one of which raises a macOS panel that then sits on the owner's
+     * and one of which raises a macOS panel that then sits on the user's
      * screen. The subtree that holds the dismiss control is the dialog.
      */
     let scope = dismiss_ids
@@ -2567,7 +2492,7 @@ async fn sweep_modal(
         // buttons were counted, so charging it to `swept` pushes the buckets
         // past the total and turns the consistency check negative.
         here.revealed += 1;
-        if std::env::var_os("SWEEP_TRACE").is_some() {
+        if cli::trace() {
             println!("      [modal] clicked: {name:?}");
         }
         tokio::time::sleep(Duration::from_millis(180)).await;
@@ -2711,7 +2636,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
          * neither position nor visibility separates them. Sweeping the union
          * meant Home's ~160 row controls were pressed under the project
          * surface's name while the panel's own controls were crowded out of the
-         * plan - and the side panels are where the owner reports most problems.
+         * plan - and the side panels are where users report most problems.
          */
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
@@ -2790,7 +2715,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 // surface reads as vanished.
                 here.navigation += 1;
             } else if reach::opens_native_dialog(&node.name) {
-                // Never pressed unattended: a native chooser takes the owner's
+                // Never pressed unattended: a native chooser takes the user's
                 // screen and cannot be dismissed from here.
                 here.native += 1;
                 skipped_native.push(node.name.clone());
@@ -2853,7 +2778,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             if !reach::on_surface(&before.nodes, surface) {
                 if !open_surface(client, surface).await? {
                     here.vanished += 1;
-                    if std::env::var_os("SWEEP_TRACE").is_some() {
+                    if cli::trace() {
                         println!("    left surface, could not return: {name:?}");
                     }
                     continue;
@@ -2892,7 +2817,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 });
             let Some(node) = found else {
                 here.vanished += 1;
-                if std::env::var_os("SWEEP_TRACE").is_some() {
+                if cli::trace() {
                     println!("    vanished: {name:?} (id {planned_id})");
                 }
                 continue;
@@ -2901,7 +2826,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             let id = node.id;
             if !reach::onscreen(node) || !node.enabled {
                 here.vanished += 1;
-                if std::env::var_os("SWEEP_TRACE").is_some() {
+                if cli::trace() {
                     let visible_buttons = before
                         .nodes
                         .iter()
@@ -2928,7 +2853,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 continue;
             }
             here.swept += 1;
-            if std::env::var_os("SWEEP_TRACE").is_some() {
+            if cli::trace() {
                 println!("    clicked: {name:?}");
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2936,7 +2861,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             /*
              * If that opened a modal, sweep it and then prove it closes.
              *
-             * This is the check the harness did not have, and the gap the owner
+             * This is the check the harness did not have, and the gap a user
              * found by hand: the fork dialog renders two `Cancel` controls and
              * an Escape handler, all three do nothing, and the app is trapped
              * with every control behind the modal unreachable. Judging each
@@ -2953,7 +2878,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
              *
              * Pressing `Attach files` puts a macOS panel over the app that no
              * click from here can reach and that the semantic tree cannot see -
-             * the owner watched one sit on their screen mid-run, twice. The
+             * a user watched one sit on their screen mid-run, twice. The
              * exclusion list that used to prevent this is gone on purpose
              * (everything gets tested), so the harness recovers instead: if the
              * tree stops answering or stops changing after a press, send the
@@ -3063,30 +2988,26 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mode = args.first().map(String::as_str).unwrap_or("idle");
-    if matches!(mode, "-h" | "--help" | "help") {
-        print!("{USAGE}");
-        return Ok(());
-    }
-    // The inventory reads the check list, not the app, so it answers "what is
-    // covered" with nothing running. Before the descriptor lookup for that
-    // reason: requiring a live instance to list the tests is what kept the
-    // coverage question unanswerable.
-    if mode == "list" {
+    let cli = <cli::Cli as clap::Parser>::parse();
+    cli::set_trace(cli.trace);
+    cli::set_pace(cli.pace);
+
+    // The inventory reads the check list, not the application, so it answers
+    // "what is covered" with nothing running. Before the descriptor lookup for
+    // that reason: requiring a live instance to list the checks is what kept
+    // the coverage question unanswerable.
+    if let cli::Command::List { checks } = &cli.command {
         print!(
             "{}",
-            qa::manifest(checks_dir_arg(&args).as_deref()).map_err(|error| eyre!(error))?
+            qa::manifest(checks.as_deref()).map_err(|error| eyre!(error))?
         );
         return Ok(());
     }
 
-    let descriptor = inspector::discover(None)?;
+    let descriptor = inspector::discover(cli.descriptor.as_deref().and_then(|p| p.to_str()))?;
     descriptor.warn_if_stale();
 
-    // The dump modes announce what they attached to, because the answer to
-    // "why is this number wrong" is usually "a different process".
-    let verbose = matches!(mode, "metrics" | "watch" | "frames" | "tree");
+    let verbose = cli.command.is_dump();
     if verbose {
         println!("descriptor: {}", descriptor.path.display());
         println!("{}", report::dump(&descriptor.raw, usize::MAX));
@@ -3102,14 +3023,13 @@ async fn main() -> Result<()> {
         println!("{}", report::dump(&tools, 1200));
     }
 
-    match mode {
-        "metrics" => {
+    match cli.command {
+        cli::Command::Metrics => {
             println!("\n== metrics ==");
             let answer = client.diagnostics(&DiagnosticsRequest::Metrics).await?;
             println!("{}", report::dump(&answer.envelope, 2000));
         }
-        "watch" => {
-            let seconds: f64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20.0);
+        cli::Command::Watch { seconds } => {
             println!("\n== observing metrics/console/runtimeErrors for {seconds}s ==");
             // Tolerates a protocol error on purpose: the server answers
             // `streamingUnavailable` because `observe` is not implemented, and
@@ -3128,8 +3048,8 @@ async fn main() -> Result<()> {
                 println!("{}", report::dump(&message, 400));
             }
         }
-        "frames" => report::show_frames(&metrics(&mut client).await?),
-        "tree" => {
+        cli::Command::Frames => report::show_frames(&metrics(&mut client).await?),
+        cli::Command::Tree => {
             println!("\n== semantic tree ==");
             // The Python sent `maxDepth` here, which the server rejects: fields
             // inside protocol variants are snake_case. Encoding from the shared
@@ -3143,39 +3063,31 @@ async fn main() -> Result<()> {
                 .await?;
             println!("{}", report::dump(&answer.envelope, 3000));
         }
-        "layout" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
-            layout(&mut client, want).await?;
+        cli::Command::Layout { name } => {
+            layout(&mut client, &name).await?;
         }
-        "transcript" => transcript(&mut client).await?,
-        "paint" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
-            let min_area: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(10_000.0);
-            paint(&mut client, want, min_area).await?;
+        cli::Command::Transcript => transcript(&mut client).await?,
+        cli::Command::Paint { name, min_area } => {
+            paint(&mut client, &name, min_area).await?;
         }
-        "nodes" => {
+        cli::Command::Nodes => {
             nodes(&mut client).await?;
         }
-        "panes" => panes(&mut client).await?,
-        "dom" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
-            let depth: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(6);
-            dom(&mut client, want, depth).await?;
+        cli::Command::Panes => panes(&mut client).await?,
+        cli::Command::Dom { name, depth } => {
+            dom(&mut client, &name, depth).await?;
         }
-        "spill" => {
-            let axis = args.get(1).map(String::as_str).unwrap_or("h");
-            let tolerance: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5);
-            spill(&mut client, axis, tolerance).await?;
+        cli::Command::Spill { axis, tolerance } => {
+            spill(&mut client, &axis, tolerance).await?;
         }
-        "idle" => report::show("idle", &metrics(&mut client).await?),
+        cli::Command::Idle => report::show("idle", &metrics(&mut client).await?),
         // Every counter the app publishes is cumulative since launch, and a
         // mount costs thousands of DOM writes. Reading them once and calling
         // the total a rate is how "3,698 attribute writes" got recorded as 230
         // a second when it was actually the startup mount, counted once.
         // Two reads and a subtraction is the only honest way to ask what an
         // idle app is still doing.
-        "drift" => {
-            let seconds: f64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20.0);
+        cli::Command::Drift { seconds } => {
             let before = metrics(&mut client).await?;
             println!("== holding still for {seconds}s, nothing driven ==");
             tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
@@ -3234,11 +3146,9 @@ async fn main() -> Result<()> {
          * expected to have one, so this reports only boxes that are both
          * sizeable and attached to something the tree calls hidden.
          */
-        "ghost" => {
-            let min_area: f64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(64.0);
+        cli::Command::Ghost { min_area, max } => {
             // Second argument so `ghost 64 0` can still demand a perfectly clean
             // tree when a caller wants that, without editing this default.
-            let max_ghosts: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(400);
             let answer = client
                 .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
                     include_dom: true,
@@ -3336,19 +3246,18 @@ async fn main() -> Result<()> {
                 // comparable tree (5,527 nodes vs 5,098), a 41x rise. The budget
                 // sits between the two, far enough above the healthy figure that
                 // ordinary drift in the retained panes does not trip it.
-                if ghosts.len() > max_ghosts {
+                if ghosts.len() > max {
                     println!(
-                        "over budget: {} ghosts, limit {max_ghosts}. Hidden subtrees are not \
+                        "over budget: {} ghosts, limit {max}. Hidden subtrees are not \
                          being unmounted.",
                         ghosts.len()
                     );
                     std::process::exit(1);
                 }
-                println!("within budget: limit {max_ghosts}");
+                println!("within budget: limit {max}");
             }
         }
-        "blink" => {
-            let allowed_missed: u64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+        cli::Command::Blink { allowed_missed } => {
             let reading = metrics(&mut client).await?;
             report::show("blink", &reading);
 
@@ -3373,7 +3282,7 @@ async fn main() -> Result<()> {
             let worst_interval = window.interval.max_ms;
 
             println!();
-            println!("== the owner's repro: a project with 0 items, item list expanded ==");
+            println!("== the reported repro: a project with 0 items, item list expanded ==");
             println!(
                 "  missed refreshes : {} over {} frames (allowed {allowed_missed})",
                 window.missed_refreshes, window.window_frames
@@ -3404,26 +3313,21 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        "click" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
+        cli::Command::Click { name } => {
             nodes(&mut client).await?;
-            click_named(&mut client, want).await?;
+            click_named(&mut client, &name).await?;
         }
-        "capture" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
-            let scale: f32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1.0);
-            capture(&mut client, want, scale).await?;
+        cli::Command::Capture { name, scale } => {
+            capture(&mut client, &name, scale as f32).await?;
         }
-        "audit" => {
-            let family = args.get(1).map(String::as_str);
-            let faults = run_audit(&mut client, family).await?;
+        cli::Command::Audit { family } => {
+            let faults = run_audit(&mut client, family.as_deref()).await?;
             if faults > 0 {
                 std::process::exit(1);
             }
         }
-        "sweep" => {
-            let family = args.get(1).map(String::as_str);
-            let failures = run_sweep(&mut client, family).await?;
+        cli::Command::Sweep { family } => {
+            let failures = run_sweep(&mut client, family.as_deref()).await?;
             if failures > 0 {
                 std::process::exit(1);
             }
@@ -3437,10 +3341,9 @@ async fn main() -> Result<()> {
          * control acts under `press` and not under `click`, the finding is the
          * harness's, and every result that rests on `click` needs re-reading.
          */
-        "press" => {
-            let want = args.get(1).map(String::as_str).unwrap_or_default();
+        cli::Command::Press { name } => {
             let (snapshot, _) = inspect(&mut client).await?;
-            let wanted = want.to_lowercase();
+            let wanted = name.to_lowercase();
             let Some(node) = snapshot
                 .nodes
                 .iter()
@@ -3448,7 +3351,7 @@ async fn main() -> Result<()> {
                 .filter(|n| n.visible && n.enabled)
                 .find(|n| n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
             else {
-                bail!("no visible, enabled, sized node matching {want:?}");
+                bail!("no visible, enabled, sized node matching {name:?}");
             };
             let b = node.bounds.unwrap();
             let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
@@ -3471,39 +3374,26 @@ async fn main() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(400)).await;
             println!("pressed");
         }
-        "cover" => {
-            let surface = args.get(1).map(String::as_str);
-            let failures = run_cover(&mut client, surface).await?;
+        cli::Command::Cover { surface } => {
+            let failures = run_cover(&mut client, surface.as_deref()).await?;
             if failures > 0 {
                 std::process::exit(1);
             }
         }
-        "qa" => {
-            let group = args.get(1).map(String::as_str);
-            // `--checks <dir>` anywhere after the mode, so the common case stays
-            // `ps-qa qa` from the application's own root.
-            let checks_dir = args
-                .iter()
-                .position(|arg| arg == "--checks")
-                .and_then(|at| args.get(at + 1))
-                .map(std::path::PathBuf::from);
-            let group = group.filter(|g| *g != "--checks");
-            let toon = args.iter().any(|arg| arg == "--toon");
-            let group = group.filter(|g| *g != "--toon");
-            let failed = run_qa(&mut client, group, checks_dir.as_deref(), toon).await?;
+        cli::Command::Qa { selector, checks } => {
+            let failed = run_qa(&mut client, selector.as_deref(), checks.as_deref()).await?;
             if failed > 0 {
                 std::process::exit(1);
             }
         }
-        "reveal" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("");
+        cli::Command::Reveal { name } => {
             let (snapshot, _) = inspect(&mut client).await?;
             let Some(target) = snapshot
                 .nodes
                 .iter()
-                .find(|node| node.name.contains(want) && node.bounds.is_some())
+                .find(|node| node.name.contains(&name) && node.bounds.is_some())
             else {
-                bail!("no node named {want:?}");
+                bail!("no node named {name:?}");
             };
             let before = target.bounds.unwrap();
             let id = target.id;
@@ -3525,39 +3415,36 @@ async fn main() -> Result<()> {
                 None => println!("after: the node is gone from the tree"),
             }
         }
-        "key" => {
-            let name = args.get(1).map(String::as_str).unwrap_or("pageup");
-            let count: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1);
+        cli::Command::Key { name, count, over } => {
+            // An empty `over` falls back to whatever the profile calls the
+            // main scrolling region, so the common case needs no argument.
             let fallback = reach::profile()
                 .transcript_region
                 .clone()
                 .unwrap_or_default();
-            let over = args.get(3).map(String::as_str).unwrap_or(&fallback);
-            press_key(&mut client, name, count, over).await?;
+            let over = if over.is_empty() { &fallback } else { &over };
+            press_key(&mut client, &name, count as usize, over).await?;
         }
-        "type" => {
-            let count: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20);
-            let want = args.get(2).map(String::as_str).unwrap_or("");
+        cli::Command::Type { count, name } => {
             nodes(&mut client).await?;
-            type_keys(&mut client, count, want).await?;
+            type_keys(&mut client, count as usize, &name).await?;
         }
         // Wheel events go to whatever the document last saw hovered, which an
         // injected pointer move does not reliably set, so they scroll nothing.
         // This asks the node's own scroll container to move, which is what
         // `scroll` should have been able to do all along.
-        "drag" => {
+        cli::Command::Drag { name, dy, steps } => {
             let fallback = reach::profile()
                 .transcript_region
                 .clone()
                 .unwrap_or_default();
-            let want = args.get(1).map(String::as_str).unwrap_or(&fallback);
-            let dy: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(-400.0);
-            let times: usize = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
+            let name = if name.is_empty() { &fallback } else { &name };
+            let times = steps as usize;
             let (snapshot, _) = inspect(&mut client).await?;
             let Some(target) = snapshot
                 .nodes
                 .iter()
-                .filter(|node| node.visible && node.name.contains(want))
+                .filter(|node| node.visible && node.name.contains(name))
                 .filter_map(|node| node.bounds.map(|b| (node, b)))
                 .max_by(|a, b| {
                     (a.1[2] * a.1[3])
@@ -3566,7 +3453,7 @@ async fn main() -> Result<()> {
                 })
                 .map(|(node, _)| node.id)
             else {
-                bail!("no visible node named {want:?}");
+                bail!("no visible node named {name:?}");
             };
             println!("scrolling node {target} by {dy} x{times}");
             for _ in 0..times {
@@ -3581,26 +3468,22 @@ async fn main() -> Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        "scroll" => {
-            let ticks: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(120);
-            let delta: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(-80.0);
+        cli::Command::Scroll { ticks, delta, over } => {
             let fallback = reach::profile()
                 .transcript_region
                 .clone()
                 .unwrap_or_default();
-            let over = args.get(3).map(String::as_str).unwrap_or(&fallback);
+            let over = if over.is_empty() { &fallback } else { &over };
             let count = nodes(&mut client).await?;
             hover_over(&mut client, over).await?;
             report::show("before", &metrics(&mut client).await?);
-            scroll(&mut client, ticks, delta).await?;
+            scroll(&mut client, ticks as usize, delta).await?;
             report::show("after", &metrics(&mut client).await?);
             println!("tree size during run: {count} nodes");
         }
-        other => {
-            eprintln!("unknown mode {other}\n");
-            eprint!("{USAGE}");
-            std::process::exit(2);
-        }
+        // No catch-all: the parser rejects an unknown command, with the list of
+        // real ones, before any of this runs.
+        cli::Command::List { .. } => unreachable!("handled before the client connects"),
     }
     Ok(())
 }

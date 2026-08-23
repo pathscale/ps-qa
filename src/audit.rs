@@ -12,14 +12,14 @@
 //! So this does not render anything. It walks the semantic tree of the running
 //! application, takes every button in it, and asks the renderer what each one
 //! actually put on screen. There is no fixture, no mock and no isolated mount:
-//! the subject is the app the owner is looking at.
+//! the subject is the app a person is looking at.
 //!
 //! # What it can and cannot say
 //!
-//! It reports what a control *shows*. A button with no ink is one the owner
+//! It reports what a control *shows*. A button with no ink is one a person
 //! cannot see, which is the failure that kept shipping. It deliberately does
 //! not click anything: `Delete` and `Close` are destructive, and an audit that
-//! mutates the owner's data to prove a button works is worse than the bug.
+//! mutates the user's data to prove a button works is worse than the bug.
 //! Behaviour under click belongs in `qa`, against a throwaway profile.
 //!
 //! ```sh
@@ -34,7 +34,7 @@ use blitz_control_protocol::SemanticNode;
 /// A control's visible state, as the renderer drew it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Ink on screen: the owner can see this control.
+    /// Ink on screen: a person can see this control.
     Drawn,
     /// A box, but nothing in it. This is the failure that kept shipping.
     Blank,
@@ -126,7 +126,7 @@ pub fn family_of(name: &str) -> &'static str {
 /// Every button worth auditing, in tree order.
 ///
 /// Buttons only: a `generic` node with no box is ordinary layout, while a
-/// button the owner cannot see is a bug. Keeping the subject narrow is what
+/// button nobody can see is a bug. Keeping the subject narrow is what
 /// makes a zero-fault run meaningful rather than noise.
 pub fn buttons(nodes: &[SemanticNode]) -> Vec<&SemanticNode> {
     nodes
