@@ -1905,20 +1905,53 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
      * button sat at x=139, because an overflowed copy came first in the tree.
      */
     let pick = |snapshot: &AgentSnapshot, viewport: (f64, f64)| -> Option<(u64, [f64; 4])> {
-        let mut fallback = None;
-        for node in snapshot
+        let modal_scope: HashSet<u64> = reach::dismissers(&snapshot.nodes)
+            .first()
+            .map(|(id, _)| reach::enclosing_dialog(&snapshot.nodes, *id))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let surface_scope: HashSet<u64> = reach::surfaces()
+            .iter()
+            .find(|surface| reach::on_surface(&snapshot.nodes, surface))
+            .map(|surface| reach::on_surface_subtree(&snapshot.nodes, surface))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let candidates: Vec<_> = snapshot
             .nodes
             .iter()
             .filter(|n| n.role == "button")
             .filter(|n| n.name.to_lowercase().contains(&wanted))
             .filter(|n| n.visible && n.enabled)
-        {
-            let Some(bounds) = node.bounds.filter(|b| b[2] > 0.0 && b[3] > 0.0) else {
-                continue;
-            };
-            if !offscreen(bounds, viewport) {
-                return Some((node.id, bounds));
+            .filter_map(|node| {
+                node.bounds
+                    .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+                    .map(|bounds| (node, bounds))
+            })
+            .collect();
+
+        // Prefer the modal in front, then the active surface, then global
+        // chrome. Retained panes can keep enabled, painted controls with the
+        // same name; tree order is not a statement about which one owns the
+        // interaction the caller can currently see.
+        for scope in [&modal_scope, &surface_scope] {
+            if let Some((node, bounds)) = candidates
+                .iter()
+                .find(|(node, bounds)| scope.contains(&node.id) && !offscreen(*bounds, viewport))
+            {
+                return Some((node.id, *bounds));
             }
+        }
+        if let Some((node, bounds)) = candidates
+            .iter()
+            .find(|(_, bounds)| !offscreen(*bounds, viewport))
+        {
+            return Some((node.id, *bounds));
+        }
+
+        let mut fallback = None;
+        for (node, bounds) in candidates {
             /*
              * Of the off-screen matches, prefer one `ScrollIntoView` can
              * actually recover.
