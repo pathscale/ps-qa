@@ -121,6 +121,11 @@ pub enum Expect {
     /// proves that exact row survived without comparing a broad family count
     /// that hover-revealed neighbours can legitimately change.
     TargetPaints,
+    /// The named subject paints above the named comparison control.
+    ///
+    /// This is a rendered-order assertion, not DOM order. It verifies list
+    /// placement using the boxes a person actually sees.
+    Above,
 }
 
 /// One thing that must be true of the running panel.
@@ -150,6 +155,14 @@ pub struct Check {
     pub hover: Option<String>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
+    /// Focus this named text field and enter [`text`](Self::text).
+    pub type_into: Option<String>,
+    /// Literal text to enter after the click step.
+    pub text: Option<String>,
+    /// A final named key such as Enter or Escape, sent to `type_into`.
+    pub key: Option<String>,
+    /// The second named node for a relative-position expectation.
+    pub compare: Option<String>,
     /// Opt into generic coordinate-pointer activation instead of semantic
     /// node activation. Application suites omit this unless they explicitly
     /// intend to test hit-testing.
@@ -332,6 +345,26 @@ pub fn verdict(
         Expect::TargetPaints => {
             return Err("TargetPaints must be resolved by the live QA runner".to_owned());
         }
+        Expect::Above => {
+            let compare = check
+                .compare
+                .as_deref()
+                .ok_or_else(|| "Above requires compare".to_owned())?;
+            let subject = found
+                .iter()
+                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .ok_or_else(|| format!("no painted node matching {:?}", check.subject))?;
+            let other = matching(after, compare)
+                .into_iter()
+                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .ok_or_else(|| format!("no painted comparison node matching {compare:?}"))?;
+            if subject[1] >= other[1] {
+                return Err(format!(
+                    "{:?} is at y={:.0}, not above {compare:?} at y={:.0}",
+                    check.subject, subject[1], other[1]
+                ));
+            }
+        }
         Expect::PaintsMore => {
             let was = matching(before, &check.subject)
                 .into_iter()
@@ -434,5 +467,17 @@ mod tests {
     fn checks_default_to_semantic_actions_and_can_opt_into_pointer_press() {
         assert!(!parse("").press);
         assert!(parse("press:true,").press);
+    }
+
+    #[test]
+    fn checks_can_describe_literal_semantic_input() {
+        let check = parse(
+            "type_into:Some(\"New item\"),text:Some(\"qa audit newest\"),\
+             key:Some(\"Enter\"),compare:Some(\"older\"),",
+        );
+        assert_eq!(check.type_into.as_deref(), Some("New item"));
+        assert_eq!(check.text.as_deref(), Some("qa audit newest"));
+        assert_eq!(check.key.as_deref(), Some("Enter"));
+        assert_eq!(check.compare.as_deref(), Some("older"));
     }
 }
