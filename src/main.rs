@@ -1472,6 +1472,7 @@ async fn run_qa(
         // dispatched is itself a failure, not a skip.
         let mut click_error = None;
         let mut action_target = None;
+        let mut action_node_id = None;
         if let Some(want) = check.click.as_deref() {
             if check.expect == qa::Expect::TargetPaints && !check.press {
                 let (tree, _) = inspect(client).await?;
@@ -1485,13 +1486,16 @@ async fn run_qa(
                     .map(|node| node.name.clone());
             }
             let driven = if check.press {
-                press_named(client, want).await
+                press_named(client, want).await.map(|()| None)
             } else {
-                click_named_quiet(client, want).await
+                click_named_quiet(client, want).await.map(Some)
             };
-            if let Err(error) = driven {
-                let how = if check.press { "press" } else { "click" };
-                click_error = Some(format!("could not {how} {want:?}: {error}"));
+            match driven {
+                Ok(node_id) => action_node_id = node_id,
+                Err(error) => {
+                    let how = if check.press { "press" } else { "click" };
+                    click_error = Some(format!("could not {how} {want:?}: {error}"));
+                }
             }
             /*
              * Long enough for the *slowest* thing a control opens.
@@ -1549,6 +1553,9 @@ async fn run_qa(
                 targeted.subject = subject;
                 targeted.expect = qa::Expect::Paints;
                 qa::verdict(&targeted, &before.nodes, &after.nodes)
+            }
+            None if check.expect == qa::Expect::ValueChanges && action_node_id.is_some() => {
+                qa::value_changed(action_node_id.unwrap(), &before.nodes, &after.nodes)
             }
             None => qa::verdict(check, &before.nodes, &after.nodes),
         };
@@ -2131,7 +2138,7 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
 }
 
 /// `click_named` without the metrics report, for the QA runner's inner loop.
-async fn click_named_quiet(client: &mut Client, want: &str) -> Result<()> {
+async fn click_named_quiet(client: &mut Client, want: &str) -> Result<u64> {
     // Resolve through the same painted, on-screen semantic path as navigation.
     // `visible` alone is insufficient: retained subtrees can expose an old
     // semantic node at 0x0, and activating that id reports a working control
@@ -2150,7 +2157,7 @@ async fn click_named_quiet(client: &mut Client, want: &str) -> Result<()> {
             node_id: target_id,
         }))
         .await?;
-    Ok(())
+    Ok(target_id)
 }
 
 /// What a captured frame contains, in the terms a person would use.
