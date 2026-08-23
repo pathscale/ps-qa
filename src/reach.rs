@@ -494,6 +494,18 @@ pub fn is_inert_control(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix.as_str()))
 }
 
+/// Whether this control needs its own disposable application session.
+///
+/// The names are application data. The harness supplies only the scheduling
+/// rule: never press a session-ending or fixture-resetting action in the middle
+/// of a shared sweep.
+pub fn requires_isolated_outcome(name: &str) -> bool {
+    profile()
+        .isolated_controls
+        .iter()
+        .any(|control| name.eq_ignore_ascii_case(control))
+}
+
 /// The subtree of the dialog that owns this dismiss control.
 ///
 /// A modal does not remove the surface behind it: that surface stays in the
@@ -668,6 +680,8 @@ pub struct Coverage {
     pub navigation: usize,
     /// Hands the screen to a native modal, so it is never pressed unattended.
     pub manual: usize,
+    /// Requires a disposable application session and a dedicated outcome check.
+    pub isolated: usize,
     /// Left unreachable behind a dialog that would not dismiss.
     ///
     /// Its own bucket because it is neither a pass nor a skip: these controls
@@ -709,13 +723,14 @@ impl Coverage {
             + self.vanished
             + self.navigation
             + self.manual
+            + self.isolated
             + self.blocked
             + self.revealed
     }
 
     pub fn line(&self) -> String {
         format!(
-            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} manual, {} blocked{}",
+            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} manual, {} isolated, {} blocked{}",
             self.total(),
             if self.revealed > 0 {
                 format!(" ({} on open, {} revealed)", self.in_tree, self.revealed)
@@ -728,6 +743,7 @@ impl Coverage {
             self.vanished,
             self.navigation,
             self.manual,
+            self.isolated,
             self.blocked,
             if self.accounted() {
                 String::new()
@@ -991,13 +1007,14 @@ mod tests {
         // on a zero that proves nothing. One dialog put real controls in
         // `blocked`, which is why it counts.
         let full = Coverage {
-            in_tree: 10,
+            in_tree: 11,
             swept: 3,
             unreachable: 2,
             hidden: 1,
             vanished: 1,
             navigation: 1,
             manual: 1,
+            isolated: 1,
             blocked: 1,
             revealed: 0,
         };
