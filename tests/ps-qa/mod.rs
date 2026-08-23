@@ -27,6 +27,7 @@ pub mod hover;
 pub mod icons;
 pub mod rename;
 pub mod sections;
+pub mod settings;
 pub mod status;
 pub mod tasklog;
 
@@ -37,6 +38,7 @@ pub fn all() -> Vec<Check> {
     checks.extend(hover::checks());
     checks.extend(status::checks());
     checks.extend(sections::checks());
+    checks.extend(settings::checks());
     checks.extend(tasklog::checks());
     checks.extend(rename::checks());
     checks.extend(dialog::checks());
