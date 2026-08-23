@@ -1973,7 +1973,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         bail!("no visible, enabled, sized button matching it");
     };
     if offscreen(bounds, viewport) {
-        bail!("{want:?} is still off-screen after scrolling it into view");
+        bail!("{want:?} is still off-screen at {bounds:?} after scrolling it into view");
     }
     Ok((id, bounds))
 }
@@ -2043,6 +2043,9 @@ async fn click_named_quiet(client: &mut Client, want: &str) -> Result<()> {
     // semantic node at 0x0, and activating that id reports a working control
     // dead while its current painted replacement remains untouched.
     let (target_id, _) = locate_button(client, want).await?;
+    if cli::trace() {
+        println!("        activating {want:?} (id {target_id})");
+    }
     client
         .agent(&AgentControlRequest::Act(AgentAction::Click {
             node_id: target_id,
