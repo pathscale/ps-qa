@@ -1157,8 +1157,12 @@ async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) ->
         "left" | "arrowleft" => ("ArrowLeft", "ArrowLeft"),
         "right" | "arrowright" => ("ArrowRight", "ArrowRight"),
         "tab" => ("Tab", "Tab"),
+        "enter" => ("Enter", "Enter"),
+        "escape" | "esc" => ("Escape", "Escape"),
         other => {
-            bail!("unknown key {other:?}: pageup, pagedown, home, end, up, down, left, right, tab")
+            bail!(
+                "unknown key {other:?}: pageup, pagedown, home, end, up, down, left, right, tab, enter, escape"
+            )
         }
     };
 
@@ -1225,6 +1229,45 @@ async fn type_keys(client: &mut Client, count: usize, want: &str) -> Result<()> 
     report::show("before", &before);
     report::show("after", &after);
     report::show_delta(&before, &after, count);
+    Ok(())
+}
+
+/// Enter literal text through the focused node's semantic input path.
+async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<()> {
+    let (snapshot, _) = inspect(client).await?;
+    let field = find_text_field(&snapshot.nodes, want)
+        .ok_or_else(|| eyre!("no enabled, visible text field matching {want:?}"))?;
+    client
+        .agent(&AgentControlRequest::Act(AgentAction::Click {
+            node_id: field.id,
+        }))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for character in text.chars() {
+        let code = if character == ' ' {
+            "Space".to_owned()
+        } else if character.is_ascii_alphabetic() {
+            format!("Key{}", character.to_ascii_uppercase())
+        } else if character.is_ascii_digit() {
+            format!("Digit{character}")
+        } else {
+            bail!("literal QA text does not support character {character:?}");
+        };
+        for phase in [KeyPhase::Down, KeyPhase::Up] {
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::Input(
+                    InputCommand::Key {
+                        phase,
+                        key: character.to_string(),
+                        code: code.clone(),
+                        modifiers: Modifiers::default(),
+                    },
+                )))
+                .await?;
+        }
+        sleep_pace().await;
+    }
     Ok(())
 }
 
@@ -1464,6 +1507,29 @@ async fn run_qa(
              * being driven is how a working control reads as broken, so this
              * is the slow case for everything.
              */
+            settle(client, Some(&check.subject)).await?;
+        }
+
+        if click_error.is_none()
+            && let Some(text) = check.text.as_deref()
+        {
+            if let Some(field) = check.type_into.as_deref() {
+                if let Err(error) = type_text(client, field, text).await {
+                    click_error = Some(format!("could not type into {field:?}: {error}"));
+                }
+            } else {
+                click_error = Some("text requires type_into".to_owned());
+            }
+        }
+        if click_error.is_none()
+            && let Some(key) = check.key.as_deref()
+        {
+            let field = check.type_into.as_deref().unwrap_or("");
+            if let Err(error) = press_key(client, key, 1, field).await {
+                click_error = Some(format!("could not send {key:?}: {error}"));
+            }
+        }
+        if check.text.is_some() || check.key.is_some() {
             settle(client, Some(&check.subject)).await?;
         }
 

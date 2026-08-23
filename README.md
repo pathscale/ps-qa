@@ -137,6 +137,11 @@ Omitting `press` is deliberate and selects semantic node activation. Set
 | `Holds` | the count did not change |
 | `Absent` | no matching node at all |
 | `TargetPaints` | the exact accessible name selected for the click still paints |
+| `Above` | the subject's painted box is above `compare` |
+
+Outcome checks can continue past activation with literal semantic input:
+`type_into: Some("New item"), text: Some("qa audit newest"), key: Some("Enter")`.
+Text is focused and entered by node id; no coordinate pointer is involved.
 
 `Paints` is the one that earns its keep. A node can be in the tree, correctly
 named, and invisible; that is what a dead control looks like from the outside.
