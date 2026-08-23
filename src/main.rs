@@ -2820,15 +2820,14 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
         tokio::time::sleep(Duration::from_millis(400)).await;
 
         let (tree, _) = inspect(client).await?;
-        let target = tree
-            .nodes
-            .iter()
-            .find(|n| n.id == id && reach::onscreen(n))
-            .and_then(|n| n.bounds);
-        match target {
-            Some(b) => double_click_at(client, b[0] + b[2] / 2.0, b[1] + b[3] / 2.0).await?,
-            None => return Ok(false),
+        if !tree.nodes.iter().any(|n| n.id == id && reach::onscreen(n)) {
+            return Ok(false);
         }
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::DoubleClick {
+                node_id: id,
+            }))
+            .await?;
     } else if click_named_quiet(client, &opener).await.is_err() {
         return Ok(false);
     }
@@ -2850,34 +2849,6 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
         return Ok(false);
     }
     settle_on(client, surface).await
-}
-
-/// Two press-release pairs at one point, with no tree read between them.
-///
-/// A project row opens on double click and folds on single, and two `Click`
-/// actions are not a double click: each round-trips through the inspector, so
-/// they land hundreds of milliseconds apart and the app sees two singles. The
-/// row folded there and back and the project surface went unswept.
-///
-/// Sent as raw pointer phases at the node's centre for the same reason - the
-/// gap has to be small enough to fall inside the platform's dblclick threshold.
-async fn double_click_at(client: &mut Client, x: f64, y: f64) -> Result<()> {
-    for _ in 0..2 {
-        for phase in [PointerPhase::Down, PointerPhase::Up] {
-            client
-                .agent(&AgentControlRequest::Act(AgentAction::Input(
-                    InputCommand::Pointer {
-                        phase,
-                        x,
-                        y,
-                        button: 0,
-                        modifiers: Modifiers::default(),
-                    },
-                )))
-                .await?;
-        }
-    }
-    Ok(())
 }
 
 /// Sweep the controls inside an open modal, then prove it can be dismissed.
