@@ -1071,26 +1071,42 @@ async fn scroll(client: &mut Client, ticks: usize, delta: f64) -> Result<()> {
     Ok(())
 }
 
-/// The first enabled, visible textbox whose name mentions `want`.
+/// The painted textbox whose semantic name mentions `want` on the active layer.
 fn find_text_field<'a>(nodes: &'a [SemanticNode], want: &str) -> Option<&'a SemanticNode> {
+    let modal_scope: HashSet<u64> = reach::dismissers(nodes)
+        .first()
+        .map(|(id, _)| reach::enclosing_dialog(nodes, *id))
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let surface_scope: HashSet<u64> = reach::surfaces()
+        .iter()
+        .find(|surface| reach::on_surface(nodes, surface))
+        .map(|surface| reach::on_surface_subtree(nodes, surface))
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let fields: Vec<&SemanticNode> = nodes
         .iter()
         .filter(|node| {
             matches!(node.role.as_str(), "textbox" | "textarea" | "input")
                 && node.enabled
-                && node.visible
+                && reach::onscreen(node)
         })
         .collect();
-    if !want.is_empty() {
-        let wanted = want.to_lowercase();
-        if let Some(named) = fields
+
+    let matches_name = |node: &&SemanticNode| {
+        want.is_empty() || node.name.to_lowercase().contains(&want.to_lowercase())
+    };
+    for scope in [&modal_scope, &surface_scope] {
+        if let Some(field) = fields
             .iter()
-            .find(|node| node.name.to_lowercase().contains(&wanted))
+            .find(|node| matches_name(node) && scope.contains(&node.id))
         {
-            return Some(named);
+            return Some(field);
         }
     }
-    fields.first().copied()
+    fields.into_iter().find(matches_name)
 }
 
 /// Drive real key events into a focused text field and price them.
