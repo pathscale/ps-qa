@@ -162,6 +162,28 @@ pub fn onscreen(node: &SemanticNode) -> bool {
     node.visible && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
 }
 
+/// Semantic nodes to reveal from the outer container down to the target.
+///
+/// Calling `scrollIntoView` on only a deeply nested target can exhaust its
+/// local scroller while the containing panel remains below the viewport. The
+/// outer-to-inner chain exposes each nesting boundary without coordinates.
+pub fn reveal_chain(nodes: &[SemanticNode], target: u64) -> Vec<u64> {
+    let by_id: HashMap<u64, &SemanticNode> = nodes.iter().map(|node| (node.id, node)).collect();
+    let mut inner_to_outer = Vec::new();
+    let mut cursor = Some(target);
+    for _ in 0..32 {
+        let Some(id) = cursor else { break };
+        let Some(node) = by_id.get(&id) else { break };
+        if node.role == "main" {
+            break;
+        }
+        inner_to_outer.push(id);
+        cursor = node.parent;
+    }
+    inner_to_outer.reverse();
+    inner_to_outer
+}
+
 /// Whether a semantic node is an interactive component a person can operate.
 ///
 /// This intentionally keys off roles rather than tags. Applications may build
@@ -818,6 +840,20 @@ mod tests {
             "Row action",
             Some([10.0, 10.0, 20.0, 20.0])
         )));
+    }
+
+    #[test]
+    fn reveal_walks_nested_containers_from_outer_to_inner() {
+        let mut root = node(1, "main", "", Some([0.0, 0.0, 200.0, 200.0]));
+        root.parent = None;
+        let mut panel = node(2, "group", "", Some([0.0, 0.0, 200.0, 400.0]));
+        panel.parent = Some(1);
+        let mut list = node(3, "list", "", Some([0.0, 0.0, 200.0, 600.0]));
+        list.parent = Some(2);
+        let mut button = node(4, "button", "More", Some([0.0, 560.0, 80.0, 20.0]));
+        button.parent = Some(3);
+
+        assert_eq!(reveal_chain(&[root, panel, list, button], 4), vec![2, 3, 4]);
     }
 
     #[test]

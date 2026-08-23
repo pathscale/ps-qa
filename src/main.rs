@@ -2007,12 +2007,15 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         println!("        {want:?} is off-screen at {bounds:?}, scrolling it in");
     }
     let mut target = (id, bounds);
+    let mut latest = snapshot;
     for _ in 0..4 {
-        client
-            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                node_id: target.0,
-            }))
-            .await?;
+        for node_id in reach::reveal_chain(&latest.nodes, target.0) {
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                    node_id,
+                }))
+                .await?;
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
 
         // Re-inspect rather than reusing the old box: the scroll moved it, and
@@ -2029,6 +2032,7 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
         if !offscreen(target.1, viewport) {
             return Ok(target);
         }
+        latest = settled;
     }
     bail!(
         "{want:?} is still off-screen at {:?} after four semantic reveal attempts",
