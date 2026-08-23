@@ -33,6 +33,7 @@
 //!     row_action_prefixes: ["Rename "],
 //!     fold_prefixes: ["Collapse ", "Hide "],
 //!     deferred_controls: ["Start setup"],
+//!     isolated_controls: ["Restart"],
 //!     inert_controls: ["Synchronize"],
 //!     transcript_region: Some("Conversation"),
 //!     home_opener: Some("Home"),
@@ -147,6 +148,15 @@ pub struct AppProfile {
     /// the plan with it, exactly as a collapse does. A "new document" control
     /// is the usual example; an application will have its own or none.
     pub deferred_controls: Vec<String>,
+    /// Controls that end the current automation session or irreversibly reset it.
+    ///
+    /// These cannot participate in a shared broad sweep: a successful restart
+    /// closes the very control socket the sweep needs for its next assertion,
+    /// while reset or sign-out changes the fixture every later control stands
+    /// on. They are counted and named as requiring an isolated outcome check,
+    /// never hidden in the manual native-dialog bucket and never reported as
+    /// swept merely because their click was acknowledged.
+    pub isolated_controls: Vec<String>,
     /// Controls whose successful effect is outside the semantic tree.
     ///
     /// Matched as accessible-name prefixes. A clipboard write or backend
@@ -274,6 +284,7 @@ mod tests {
             transcript_region: Some("Conversation".to_owned()),
             home_opener: Some("Home".to_owned()),
             deferred_controls: vec!["New project".to_owned()],
+            isolated_controls: vec!["Restart".to_owned()],
             inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],

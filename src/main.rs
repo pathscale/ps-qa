@@ -2942,10 +2942,11 @@ async fn sweep_modal(
     if cli::trace() {
         for node in tree.nodes.iter().filter(|node| {
             scope.contains(&node.id)
-                && reach::profile()
+                && (reach::profile()
                     .deferred_controls
                     .iter()
                     .any(|name| node.name.eq_ignore_ascii_case(name))
+                    || reach::requires_isolated_outcome(&node.name))
         }) {
             println!(
                 "      [modal] deferred to an outcome check: {:?}",
@@ -2961,6 +2962,7 @@ async fn sweep_modal(
         .filter(|n| !dismiss_ids.contains(&n.id))
         .filter(|n| scope.contains(&n.id))
         .filter(|n| !reach::requires_manual_release_check(&n.name))
+        .filter(|n| !reach::requires_isolated_outcome(&n.name))
         .filter(|n| {
             !reach::profile()
                 .deferred_controls
@@ -3081,6 +3083,8 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
     let mut failures: Vec<(String, String, String)> = Vec::new();
     // Named, so the manual worklist at the end is what this run actually met.
     let mut skipped_manual: Vec<String> = Vec::new();
+    // Named separately: these remain automated work, but need a disposable app.
+    let mut skipped_isolated: Vec<String> = Vec::new();
 
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
@@ -3170,6 +3174,9 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         for node in &buttons {
             if !reach::onscreen(node) {
                 here.unreachable += 1;
+            } else if reach::requires_isolated_outcome(&node.name) {
+                here.isolated += 1;
+                skipped_isolated.push(node.name.clone());
             } else if reach::profile()
                 .fold_prefixes
                 .iter()
@@ -3406,6 +3413,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         total.vanished += here.vanished;
         total.navigation += here.navigation;
         total.manual += here.manual;
+        total.isolated += here.isolated;
         // `blocked` and `revealed` were missing here, so a control trapped
         // behind an undismissable dialog counted on its surface line and then
         // disappeared from the run total - the one line most likely to be
@@ -3443,8 +3451,23 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             println!("  {label:<38} {command}");
         }
     }
+    if total.isolated > 0 {
+        println!(
+            "\n{} control(s) require an isolated outcome check:",
+            total.isolated
+        );
+        skipped_isolated.sort_unstable();
+        skipped_isolated.dedup();
+        for label in skipped_isolated {
+            println!("  {label}");
+        }
+    }
     if failures.is_empty() {
-        println!("every reached button acted");
+        if total.isolated > 0 {
+            println!("every broadly swept button acted; isolated controls remain listed above");
+        } else {
+            println!("every reached button acted");
+        }
     } else {
         println!("\n{} did not act:\n", failures.len());
         for (surface, name, why) in &failures {

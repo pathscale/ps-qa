@@ -104,6 +104,9 @@ remain `reachable-unverified` until an outcome check proves them. Native-dialog
 and external-link exceptions are `excluded-manual`; unreachable or anonymous
 controls are failures. Nothing is silently counted as a pass. `cover` is the
 slower, mutating sweep used when generic activation evidence is useful.
+Session-ending or fixture-resetting controls are counted as `isolated` and
+named for dedicated outcome runs; a shared sweep never claims a socket-closing
+click passed merely because the process disconnected.
 
 `dom` is usually the fastest way to the answer: a control that writes its state
 but never appears is nearly always a hidden or zero-sized *ancestor*, which the
@@ -201,8 +204,9 @@ supply that, and both belong to the application under test:
 control that opens each, the permanent tabs, the collapsible section headers,
 the prefixes of controls that close or fold something, the region a transcript
 scrolls inside, the exact native/external controls reserved for a manual pass,
-terminal controls to defer until a surface is otherwise covered, and controls
-whose successful effect is outside the semantic tree. Found by `--app`, or
+controls to defer until a surface is otherwise covered, session-ending controls
+that require an isolated outcome run, and controls whose successful effect is
+outside the semantic tree. Found by `--app`, or
 `ps-qa.ron` in the working directory. A profile that does not parse names the
 file, line and column rather than degrading to empty in silence.
 
