@@ -2007,24 +2007,34 @@ async fn locate_button(client: &mut Client, want: &str) -> Result<(u64, [f64; 4]
     if cli::trace() {
         println!("        {want:?} is off-screen at {bounds:?}, scrolling it in");
     }
-    client
-        .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-            node_id: id,
-        }))
-        .await?;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut target = (id, bounds);
+    for _ in 0..4 {
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                node_id: target.0,
+            }))
+            .await?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
-    // Re-inspect rather than reusing the old box: the scroll moved it, and
-    // pressing at where it used to be is the bug this exists to fix.
-    let (settled, _) = inspect(client).await?;
-    let viewport = viewport_of(&settled);
-    let Some((id, bounds)) = pick(&settled, viewport) else {
-        bail!("no visible, enabled, sized button matching it");
-    };
-    if offscreen(bounds, viewport) {
-        bail!("{want:?} is still off-screen at {bounds:?} after scrolling it into view");
+        // Re-inspect rather than reusing the old box: the scroll moved it, and
+        // pressing at where it used to be is the bug this exists to fix. Nested
+        // scrollers may need more than one semantic reveal: the first exposes
+        // the node inside its local list, the next exposes that list in the
+        // outer surface.
+        let (settled, _) = inspect(client).await?;
+        let viewport = viewport_of(&settled);
+        let Some(found) = pick(&settled, viewport) else {
+            bail!("no visible, enabled, sized button matching it");
+        };
+        target = found;
+        if !offscreen(target.1, viewport) {
+            return Ok(target);
+        }
     }
-    Ok((id, bounds))
+    bail!(
+        "{want:?} is still off-screen at {:?} after four semantic reveal attempts",
+        target.1
+    )
 }
 
 /// Double click the first visible match, for reaching a surface.
