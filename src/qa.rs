@@ -359,9 +359,26 @@ pub fn verdict(
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
+                let other_painted = after
+                    .iter()
+                    .filter(|node| {
+                        node.role != role
+                            && node.name.contains(name)
+                            && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                    })
+                    .take(3)
+                    .map(|node| format!("{} id={}", node.role, node.id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let other_painted = if other_painted.is_empty() {
+                    "none".to_owned()
+                } else {
+                    other_painted
+                };
                 return Err(format!(
-                    "no {role} named {name:?} has a box ({} in the tree: {state})",
-                    matches.len()
+                    "no {role} named {name:?} has a box ({} in the tree: {state}); \
+                     other painted matches: {other_painted}",
+                    matches.len(),
                 ));
             }
         }
@@ -576,5 +593,33 @@ mod tests {
             verdict(&check, &[node(7, "0")], &[node(7, "0"), node(8, "1")],).is_err(),
             "a neighbouring repeated control cannot satisfy the check"
         );
+    }
+
+    #[test]
+    fn a_named_paint_failure_reports_a_still_painted_activator() {
+        let mut check = parse("");
+        check.subject = "textbox:Rename project".into();
+        check.expect = Expect::PaintsNamed;
+        let node = |id, role: &str, bounds: Option<[f64; 4]>| SemanticNode {
+            id,
+            parent: None,
+            role: role.into(),
+            name: "Rename project".into(),
+            value: None,
+            enabled: true,
+            visible: bounds.is_some(),
+            selected: false,
+            bounds,
+        };
+        let error = verdict(
+            &check,
+            &[],
+            &[
+                node(7, "textbox", Some([0.0, 0.0, 0.0, 0.0])),
+                node(8, "button", Some([10.0, 10.0, 20.0, 20.0])),
+            ],
+        )
+        .expect_err("the textbox does not paint");
+        assert!(error.contains("other painted matches: button id=8"));
     }
 }
