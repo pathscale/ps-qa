@@ -2502,36 +2502,40 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
     struct SurfaceRow {
         surface: String,
         opened: bool,
-        buttons: usize,
+        components: usize,
         reachable: usize,
         unreachable: usize,
         anonymous: usize,
         manual: usize,
+        unverified: usize,
         sections_opened: usize,
         rows_hovered: usize,
     }
 
     #[derive(serde::Serialize)]
-    struct FaultRow {
+    struct ControlRow {
         surface: String,
         id: u64,
+        role: String,
         name: String,
+        classification: String,
         reason: String,
     }
 
     #[derive(serde::Serialize)]
     struct InventoryReport {
-        buttons: usize,
+        components: usize,
         reachable: usize,
         unreachable: usize,
         anonymous: usize,
         manual: usize,
+        unverified: usize,
         surfaces: Vec<SurfaceRow>,
-        controls: Vec<FaultRow>,
+        controls: Vec<ControlRow>,
     }
 
     let mut rows = Vec::new();
-    let mut faults = Vec::new();
+    let mut controls = Vec::new();
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
             continue;
@@ -2540,11 +2544,12 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             rows.push(SurfaceRow {
                 surface: surface.name.clone(),
                 opened: false,
-                buttons: 0,
+                components: 0,
                 reachable: 0,
                 unreachable: 0,
                 anonymous: 0,
                 manual: 0,
+                unverified: 0,
                 sections_opened: 0,
                 rows_hovered: 0,
             });
@@ -2556,11 +2561,12 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             rows.push(SurfaceRow {
                 surface: surface.name.clone(),
                 opened: false,
-                buttons: 0,
+                components: 0,
                 reachable: 0,
                 unreachable: 0,
                 anonymous: 0,
                 manual: 0,
+                unverified: 0,
                 sections_opened,
                 rows_hovered: 0,
             });
@@ -2571,25 +2577,33 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
             .collect();
-        let buttons: Vec<_> = tree
+        let components: Vec<_> = tree
             .nodes
             .iter()
-            .filter(|node| node.role == "button" && mine.contains(&node.id))
+            .filter(|node| reach::interactive(node) && mine.contains(&node.id))
             .collect();
-        let reachable = buttons
+        let reachable = components
             .iter()
             .filter(|node| reach::onscreen(node) && node.enabled)
             .count();
-        let unreachable = buttons.len() - reachable;
-        let anonymous = buttons
+        let unreachable = components.len() - reachable;
+        let anonymous = components
             .iter()
             .filter(|node| node.name.trim().is_empty())
             .count();
-        let manual = buttons
+        let manual = components
             .iter()
             .filter(|node| reach::requires_manual_release_check(&node.name))
             .count();
-        for node in &buttons {
+        let unverified = components
+            .iter()
+            .filter(|node| {
+                reach::onscreen(node)
+                    && node.enabled
+                    && !reach::requires_manual_release_check(&node.name)
+            })
+            .count();
+        for node in &components {
             let mut reasons = Vec::new();
             if node.name.trim().is_empty() {
                 reasons.push("anonymous");
@@ -2606,36 +2620,53 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             {
                 reasons.push("no-box");
             }
-            if !reasons.is_empty() {
-                faults.push(FaultRow {
-                    surface: surface.name.clone(),
-                    id: node.id,
-                    name: node.name.clone(),
-                    reason: reasons.join(","),
-                });
-            }
+            let manual = reach::requires_manual_release_check(&node.name);
+            let reason = if manual {
+                "native-dialog-or-external".to_owned()
+            } else if reasons.is_empty() {
+                "no outcome check matched".to_owned()
+            } else {
+                reasons.join(",")
+            };
+            controls.push(ControlRow {
+                surface: surface.name.clone(),
+                id: node.id,
+                role: node.role.clone(),
+                name: node.name.clone(),
+                classification: if manual {
+                    "excluded-manual"
+                } else if !reasons.is_empty() {
+                    "failed-reachability"
+                } else {
+                    "reachable-unverified"
+                }
+                .to_owned(),
+                reason,
+            });
         }
         rows.push(SurfaceRow {
             surface: surface.name.clone(),
             opened: true,
-            buttons: buttons.len(),
+            components: components.len(),
             reachable,
             unreachable,
             anonymous,
             manual,
+            unverified,
             sections_opened,
             rows_hovered,
         });
     }
 
     let report = InventoryReport {
-        buttons: rows.iter().map(|row| row.buttons).sum(),
+        components: rows.iter().map(|row| row.components).sum(),
         reachable: rows.iter().map(|row| row.reachable).sum(),
         unreachable: rows.iter().map(|row| row.unreachable).sum(),
         anonymous: rows.iter().map(|row| row.anonymous).sum(),
         manual: rows.iter().map(|row| row.manual).sum(),
+        unverified: rows.iter().map(|row| row.unverified).sum(),
         surfaces: rows,
-        controls: faults,
+        controls,
     };
     let failures = report.unreachable + report.anonymous;
     println!(

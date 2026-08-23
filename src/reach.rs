@@ -162,6 +162,32 @@ pub fn onscreen(node: &SemanticNode) -> bool {
     node.visible && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
 }
 
+/// Whether a semantic node is an interactive component a person can operate.
+///
+/// This intentionally keys off roles rather than tags. Applications may build
+/// a switch or menu item from a generic element with an explicit ARIA role;
+/// omitting those would make a component audit silently button-only.
+pub fn interactive(node: &SemanticNode) -> bool {
+    matches!(
+        node.role.as_str(),
+        "button"
+            | "checkbox"
+            | "combobox"
+            | "link"
+            | "menuitem"
+            | "menuitemcheckbox"
+            | "menuitemradio"
+            | "option"
+            | "radio"
+            | "slider"
+            | "spinbutton"
+            | "switch"
+            | "tab"
+            | "textbox"
+            | "treeitem"
+    )
+}
+
 /// Whether pressing this leaves the surface, invalidating the rest of the plan.
 ///
 /// The first repeatable run planned 173 buttons, pressed `Home` as the first of
@@ -768,6 +794,27 @@ mod tests {
             "button",
             "Row action",
             Some([10.0, 10.0, 20.0, 20.0])
+        )));
+    }
+
+    #[test]
+    fn component_inventory_is_not_button_only() {
+        for role in [
+            "button", "checkbox", "combobox", "link", "menuitem", "radio", "slider", "switch",
+            "tab", "textbox", "treeitem",
+        ] {
+            assert!(interactive(&node(
+                1,
+                role,
+                "Named",
+                Some([0.0, 0.0, 20.0, 20.0])
+            )));
+        }
+        assert!(!interactive(&node(
+            2,
+            "heading",
+            "Not interactive",
+            Some([0.0, 0.0, 20.0, 20.0])
         )));
     }
 
