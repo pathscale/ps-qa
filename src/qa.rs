@@ -531,11 +531,11 @@ mod tests {
     #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
-            "type_into:Some(\"New item\"),text:Some(\"qa audit newest\"),\
+            "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
              key:Some(\"Enter\"),compare:Some(\"older\"),",
         );
-        assert_eq!(check.type_into.as_deref(), Some("New item"));
-        assert_eq!(check.text.as_deref(), Some("qa audit newest"));
+        assert_eq!(check.type_into.as_deref(), Some("New record"));
+        assert_eq!(check.text.as_deref(), Some("latest fixture"));
         assert_eq!(check.key.as_deref(), Some("Enter"));
         assert_eq!(check.compare.as_deref(), Some("older"));
     }
@@ -552,17 +552,17 @@ mod tests {
             type_into: None,
             text: None,
             key: Some("Right".into()),
-            key_on: Some("Response verbosity".into()),
+            key_on: Some("Output level".into()),
             compare: None,
             press: false,
-            subject: "Response verbosity".into(),
+            subject: "Output level".into(),
             expect: Expect::ValueChanges,
         };
         let node = |id, value: &str| SemanticNode {
             id,
             parent: None,
             role: "slider".into(),
-            name: "Response verbosity".into(),
+            name: "Output level".into(),
             value: Some(value.into()),
             enabled: true,
             visible: true,
