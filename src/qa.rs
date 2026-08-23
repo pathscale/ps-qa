@@ -350,12 +350,14 @@ pub fn verdict(
                 .compare
                 .as_deref()
                 .ok_or_else(|| "Above requires compare".to_owned())?;
-            let subject = found
+            let subject_node = found
                 .iter()
-                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .find(|node| paints(node))
                 .ok_or_else(|| format!("no painted node matching {:?}", check.subject))?;
+            let subject = subject_node.bounds.expect("painted nodes have bounds");
             let other = matching(after, compare)
                 .into_iter()
+                .filter(|node| node.id != subject_node.id)
                 .find_map(|node| paints(node).then_some(node.bounds).flatten())
                 .ok_or_else(|| format!("no painted comparison node matching {compare:?}"))?;
             if subject[1] >= other[1] {
