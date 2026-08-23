@@ -69,10 +69,8 @@ jobs:
                   open: None,
                   hover: None,
                   click: None,
-                  press: false,
                   subject: "button",
                   expect: Paints,
-                  panel_only: false,
               ),
           ]
           RON
