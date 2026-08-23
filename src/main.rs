@@ -1898,7 +1898,7 @@ fn offscreen(bounds: [f64; 4], viewport: (f64, f64)) -> bool {
     bounds[1] + bounds[3] < viewport.0 || bounds[0] + bounds[2] < 0.0 || bounds[1] > viewport.1
 }
 
-/// Find a named button, scrolling it into view when it is off-screen.
+/// Find a named semantic control, scrolling it into view when it is off-screen.
 ///
 /// Skipping an off-screen control is honest but useless: an overflowing tab
 /// strip parks every project tab at negative x, so a check that navigates to a
@@ -2001,7 +2001,7 @@ async fn locate_control(
     let (snapshot, _) = inspect(client).await?;
     let viewport = viewport_of(&snapshot);
     let Some((id, bounds)) = pick(&snapshot, viewport) else {
-        bail!("no visible, enabled, sized button matching it");
+        bail!("no visible, enabled, sized semantic control matching it");
     };
     if !offscreen(bounds, viewport) {
         return Ok((id, bounds));
@@ -2030,7 +2030,7 @@ async fn locate_control(
         let (settled, _) = inspect(client).await?;
         let viewport = viewport_of(&settled);
         let Some(found) = pick(&settled, viewport) else {
-            bail!("no visible, enabled, sized button matching it");
+            bail!("no visible, enabled, sized semantic control matching it");
         };
         target = found;
         if !offscreen(target.1, viewport) {
