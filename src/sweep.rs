@@ -356,16 +356,20 @@ mod tests {
 
     #[test]
     fn a_delete_that_asks_first_has_done_its_job() {
-        // The real shape from a running Home: the row grows an inline
+        // The real shape from a running list: the row grows an inline
         // "Delete? Delete Cancel" and the project stays until it is confirmed.
         let case = Case {
             id: 1,
-            name: "Delete e".to_owned(),
+            name: "Delete thing".to_owned(),
             family: "delete",
-            expect: expectation_for("Delete e"),
+            expect: expectation_for("Delete thing"),
         };
-        let before = vec![button("Delete e"), button("Rename e")];
-        let after = vec![button("Delete e"), button("Rename e"), button("Cancel")];
+        let before = vec![button("Delete thing"), button("Rename thing")];
+        let after = vec![
+            button("Delete thing"),
+            button("Rename thing"),
+            button("Cancel"),
+        ];
         assert_eq!(judge(&case, &before, &after), None);
     }
 
@@ -379,18 +383,18 @@ mod tests {
          */
         let case = Case {
             id: 1,
-            name: "Rename e".to_owned(),
+            name: "Rename thing".to_owned(),
             family: "edit",
-            expect: expectation_for("Rename e"),
+            expect: expectation_for("Rename thing"),
         };
         let mut field = button("Project name");
         field.role = "textbox".to_owned();
         field.visible = false;
-        let before = vec![button("Rename e"), field.clone()];
+        let before = vec![button("Rename thing"), field.clone()];
 
         let mut revealed = field;
         revealed.visible = true;
-        let after = vec![button("Rename e"), revealed];
+        let after = vec![button("Rename thing"), revealed];
 
         assert_eq!(judge(&case, &before, &after), None);
         // And the failing case the app actually shows: nothing moves at all.
@@ -401,11 +405,11 @@ mod tests {
     fn a_delete_that_does_nothing_at_all_still_fails() {
         let case = Case {
             id: 1,
-            name: "Delete e".to_owned(),
+            name: "Delete thing".to_owned(),
             family: "delete",
-            expect: expectation_for("Delete e"),
+            expect: expectation_for("Delete thing"),
         };
-        let before = vec![button("Delete e"), button("Rename e")];
+        let before = vec![button("Delete thing"), button("Rename thing")];
         assert!(judge(&case, &before, &before).is_some());
     }
 

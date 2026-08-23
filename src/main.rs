@@ -1,4 +1,5 @@
-//! Drive a repeatable interaction against a running AgencyZero and measure it.
+//! Drive a repeatable interaction against a running Blitz application and
+//! measure it.
 //!
 //! The point is to remove the human from the measurement. Hand-scrolling
 //! produces numbers nobody can reproduce or compare; this sends a fixed number
@@ -1678,7 +1679,7 @@ async fn press_named(client: &mut Client, want: &str) -> Result<()> {
      * Buttons only.
      *
      * A control and the thing it opens often share an accessible name -
-     * `EditableTitle` gives the pencil and its editor the same `label` - so a
+     * an in-place editor gives the pencil and its field the same `label` - so a
      * name-only match picks whichever comes first in the tree. Once the editor
      * was open, `press "Rename "` landed *inside the text field*, opened
      * nothing, and the check reported the control dead while a manual press of
@@ -2725,7 +2726,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
              * while all of them were on screen the whole time.
              *
              * Names are not unique - 161 on-screen buttons share 81 names, with
-             * `Pin project` alone appearing thirty times - so the name path
+             * one label alone appearing thirty times - so the name path
              * takes the nth still-unpressed match rather than the first, which
              * is what stops one row absorbing every click aimed at its
              * neighbours.
@@ -2890,11 +2891,12 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
         seen.sort_unstable();
         seen.dedup();
         for label in seen {
-            let command = reach::NATIVE_CHOOSERS
+            let command = reach::profile()
+                .native_choosers
                 .iter()
-                .find(|exception| label.starts_with(exception.label))
-                .map(|exception| exception.command)
-                .unwrap_or("(unmapped - add it to NATIVE_CHOOSERS)");
+                .find(|exception| label.starts_with(exception.label.as_str()))
+                .map(|exception| exception.command.as_str())
+                .unwrap_or("(unmapped - add it to native_choosers in ps-qa.ron)");
             println!("  {label:<38} {command}");
         }
     }

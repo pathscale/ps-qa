@@ -171,9 +171,36 @@ without building the renderer that serves it — depending on the runtime for th
 same types would build a browser engine to send a wheel event.
 `cargo tree` is the check.
 
-## Status
+## Pointing it at an application
 
-The check list in `src/qa.rs` is currently AgencyZero's. Making the harness
-serve a second application means lifting three tables out of the binary and
-letting the app supply them: the surfaces to sweep, the native file panels that
-cannot be driven, and the checks themselves. Everything else is already generic.
+Nothing in `src/` knows what any one application calls its controls. Two files
+supply that, and both belong to the application under test:
+
+**`ps-qa.ron`** — what the harness cannot infer. The surfaces to sweep and the
+control that opens each, the permanent tabs, the collapsible section headers,
+the prefixes of controls that close or fold something, the region a transcript
+scrolls inside. Found by `--app`, `$PS_QA_APP`, or `ps-qa.ron` in the working
+directory. A profile that does not parse names the file, line and column rather
+than degrading to empty in silence.
+
+**`tests/ps-qa/*.ron`** — the checks. A check is a precondition, an action and
+an assertion with no behaviour of its own, so it is data: editing a selector is
+an edit and a re-run, not a recompile. Found by `--checks`, `$PS_QA_CHECKS`, or
+`tests/ps-qa/`. Files are read in name order, so the group order is the filename
+order.
+
+```sh
+ps-qa list                      # every check, no application needed
+ps-qa qa                        # run them all
+ps-qa qa dialog                 # one group
+ps-qa qa --checks path/to/dir   # from somewhere else
+```
+
+An application that ships neither still gets every diagnostic command — `layout`,
+`dom`, `paint`, `spill`, `ghost`, `drift` — because those ask the renderer
+questions that need no vocabulary.
+
+Still application-shaped, and worth knowing before pointing this at something
+new: the sweep assumes a tab strip that doubles a tab's label in its accessible
+name, and `PROJECT_TAB` resolves "the first document tab" by that doubling. An
+application that names its tabs differently will need that rule widened.

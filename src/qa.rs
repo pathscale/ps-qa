@@ -1,42 +1,38 @@
-//! Panel QA: drive every control in the side panel and check what the renderer
-//! actually did.
+//! What a check is, and what its verdict means.
 //!
 //! # Why this exists
 //!
-//! The unit suite went green through three shipped regressions in a row: the
-//! reorder arrows moved the wrong row, the task log rendered upside down, and
-//! the log could not page past its first fetch. jsdom cannot catch any of them,
-//! because jsdom is not the thing that runs: it has no compositor, it paints
-//! nothing, and it answers questions about a tree the user never sees. A green
-//! suite over jsdom says the code is self-consistent, not that the panel works.
+//! A DOM-only test environment answers questions about a tree the user never
+//! sees. It has no compositor, no hit-testing and no layout, so it reports a
+//! node as fine while the screen shows nothing. A green suite over jsdom says
+//! the code is self-consistent, not that the interface works.
 //!
-//! Two failure classes make the point, and both were live in the app while the
-//! suite was green:
+//! Two failure classes make the point, and both have shipped past a green unit
+//! suite in a real application:
 //!
-//! - **Icons.** The semantic tree reports `presentation=327` whether or not a
-//!   single pixel was painted, and every one of those nodes had a correct box
-//!   and a correct stroke colour while drawing nothing. `blitz-dom` parses each
-//!   inline `<svg>` into its own `usvg::Tree` from that element's `outer_html`
-//!   alone, so a `<use href="#i-check">` pointing into the shared sprite
-//!   resolved to nothing. jsdom cannot see this: its `<svg>` is a well-behaved
-//!   object that never goes near a rasteriser.
-//! - **Hover.** The row controls only exist while the row is hovered, so a test
-//!   that never moves a pointer cannot see them at all.
+//! - **Artwork that lays out and does not draw.** The semantic tree reports a
+//!   node whether or not a pixel was painted, and a node can have a correct box
+//!   and a correct stroke colour while drawing nothing at all. A renderer that
+//!   parses each inline `<svg>` from that element's markup alone will resolve a
+//!   reference into a shared sprite to nothing. jsdom cannot see this: its
+//!   `<svg>` is a well-behaved object that never goes near a rasteriser.
+//! - **Controls that only exist while hovered.** A test that never moves a
+//!   pointer cannot see them at all.
 //!
 //! # What a check is
 //!
 //! A [`Check`] is a precondition, an action, and an assertion about the state
-//! after it, all expressed against the running app. The point is that every
-//! part is observed rather than assumed: `Reveals` fails if the control never
-//! appears, `Clicks` fails if the click is not acknowledged, and `Paints`
-//! fails if the element exists in the tree but has no box. That last one is
-//! what the semantic tree alone will not tell you.
+//! after it, all expressed against the running application. Every part is
+//! observed rather than assumed, and [`Paints`](Expect::Paints) fails if the
+//! element is in the tree with no box - which is the thing the semantic tree
+//! alone will not tell you.
 //!
-//! Run it against a live instance:
+//! Checks are data, and they belong to the application under test rather than
+//! to this crate. See [`checks`] for where they are read from.
 //!
 //! ```sh
-//! cargo run -q -p ps-qa -- qa           # every check
-//! cargo run -q -p ps-qa -- qa icons     # one group
+//! ps-qa qa           # every check
+//! ps-qa qa icons     # one group
 //! ```
 
 use blitz_control_protocol::SemanticNode;
@@ -48,7 +44,7 @@ use std::collections::HashMap;
 /// variant. These are the choices available when writing one, documented with
 /// the failure each is right for, and a variant deleted for being momentarily
 /// unused is a distinction the next person has to rediscover. `Grows` went
-/// unconstructed the moment `tasklog-2` was strengthened to `PaintsMore`; it is
+/// unconstructed the moment one check was strengthened to `PaintsMore`; it is
 /// still the correct assertion for anything that mounts without painting.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -68,10 +64,10 @@ pub enum Expect {
     ///
     /// The inverse of [`Paints`](Expect::Paints), and the right question for
     /// anything that closes. A dismissed dialog is not removed: measured after
-    /// the fork dialog's Cancel, `Start fork` is still in the tree at
+    /// a dialog's Cancel, the dialog's own content is still in the tree at
     /// `0x0 HIDDEN`. Asking for absence there reports a working control as
     /// broken, while asking for a box distinguishes dismissed from trapped -
-    /// 1344x900 while open, nothing once closed.
+    /// full size while open, nothing once closed.
     Vanishes,
     /// The count of matching nodes changed in the given direction.
     Grows,
@@ -93,10 +89,10 @@ pub enum Expect {
     ///
     /// The precise form of [`Paints`](Expect::Paints), for the common case
     /// where a control and the thing it opens share an accessible name.
-    /// `EditableTitle` does exactly that: `Rename e` resolves to a button that
-    /// always paints and a textbox that paints only while editing, so a
-    /// name-only `Paints` is satisfied by the pencil whether or not the editor
-    /// ever opens.
+    /// An in-place rename control does exactly that: `Rename <subject>`
+    /// resolves to a button that always paints *and* a textbox that paints only
+    /// while editing, so a name-only `Paints` is satisfied by the pencil
+    /// whether or not the editor ever opens.
     ///
     /// A count-based assertion is not the answer either. `PaintsMore` over
     /// every `textbox` in the tree is fragile to whatever else happens to be
@@ -105,7 +101,7 @@ pub enum Expect {
     /// demonstrably opened. Asking about one node by name and role is the
     /// question the check actually means.
     ///
-    /// Written as `role:name`, e.g. `textbox:Rename e`.
+    /// Written as `role:name`, e.g. `textbox:Rename thing`.
     ///
     /// Judged on geometry, not on the tree's `visible` flag, because the two
     /// disagree. Measured on one node at one instant: `paint` reported the
@@ -140,10 +136,9 @@ pub struct Check {
     ///
     /// Checks run in sequence against one instance and start wherever the app
     /// opens, so anything not on that first surface is unreachable without a
-    /// navigation step. `Rename project` lives only on the project surface,
-    /// and a check for it failed with "no visible, enabled, sized button" -
-    /// which reads as a missing control rather than a check that never got
-    /// there.
+    /// navigation step. A control that lives on only one surface fails with
+    /// "no visible, enabled, sized button" when the check never got there,
+    /// which reads as a missing control rather than a missing navigation.
     pub open: Option<String>,
     /// Hover this node first, if the control is revealed on hover.
     pub hover: Option<String>,
@@ -173,9 +168,9 @@ pub struct Check {
 /// # Why these are not compiled in
 ///
 /// They used to be Rust, in a `tests/ps-qa/` module inside this crate, which was
-/// wrong twice over. It put one product's promises - `Rename project`, `Task
-/// log`, a fixture called `theta theta north indi` - inside a general harness,
-/// so pointing this binary at a second application meant editing the harness.
+/// wrong twice over. It put one product's promises - its control names, its
+/// section labels, its fixture names - inside a general harness, so pointing
+/// this binary at a second application meant editing the harness.
 /// And it made changing a selector a recompile: correcting one hardcoded
 /// fixture name after a profile rebuild touched 15 references across 6 files
 /// and needed a build to try.
