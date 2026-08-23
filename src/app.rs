@@ -79,7 +79,16 @@ pub struct AppProfile {
     /// The scrollable region a transcript lives in, if the application has one.
     pub transcript_region: Option<String>,
     /// The control that returns to the application's root surface.
+    ///
+    /// Used to recover when a sweep has walked somewhere it cannot get back
+    /// from. Without it the harness simply reports the surface as unreachable.
     pub home_opener: Option<String>,
+    /// Controls that must be pressed last, beyond the collapsible sections.
+    ///
+    /// A control that opens a new document navigates away and takes the rest of
+    /// the plan with it, exactly as a collapse does. `New project` is
+    /// AgencyZero's; another application will have its own or none.
+    pub deferred_controls: Vec<String>,
 }
 
 impl AppProfile {
@@ -182,6 +191,7 @@ mod tests {
             sections: vec!["Items".to_owned()],
             transcript_region: Some("Conversation".to_owned()),
             home_opener: Some("Home".to_owned()),
+            deferred_controls: vec!["New project".to_owned()],
         };
         let text = ron::to_string(&profile).expect("serialises");
         let back: AppProfile = ron::from_str(&text).expect("parses");

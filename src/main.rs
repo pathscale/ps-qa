@@ -421,7 +421,10 @@ async fn transcript(client: &mut Client) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("snapshot omitted layout rows"))?;
     let conversation = nodes
         .iter()
-        .find(|node| node.get("name").and_then(|value| value.as_str()) == Some("Conversation"))
+        .find(|node| {
+            node.get("name").and_then(|value| value.as_str())
+                == reach::profile().transcript_region.as_deref()
+        })
         .and_then(|node| node.get("id").and_then(|value| value.as_u64()))
         .ok_or_else(|| eyre::eyre!("no Conversation node"))?;
     let parent: HashMap<u64, Option<u64>> = nodes
@@ -685,7 +688,12 @@ async fn spill(client: &mut Client, axis: &str, tolerance: f64) -> Result<()> {
     if let Some((pane, pane_box)) = snapshot
         .nodes
         .iter()
-        .filter(|node| node.name.contains("Conversation"))
+        .filter(|node| {
+            reach::profile()
+                .transcript_region
+                .as_deref()
+                .is_some_and(|r| node.name.contains(r))
+        })
         .filter_map(|node| node.bounds.map(|bounds| (node, bounds)))
         .max_by(|a, b| {
             (a.1[2] * a.1[3])
@@ -917,7 +925,12 @@ async fn panes(client: &mut Client) -> Result<()> {
     // shape: a pane is a subtree hanging off a shared shell ancestor, and each
     // one contains exactly one "Conversation" region. Anchoring on that names
     // panes without needing new server surface.
-    const ANCHOR: &str = "Conversation";
+    // The application names its own; a profile without one gets no pane report.
+    let anchor = reach::profile()
+        .transcript_region
+        .clone()
+        .unwrap_or_default();
+    let anchor: &str = &anchor;
 
     let depth_of = |start: u64| -> usize {
         let mut cursor = Some(start);
@@ -938,7 +951,7 @@ async fn panes(client: &mut Client) -> Result<()> {
     let anchors: Vec<&SemanticNode> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.name.contains(ANCHOR))
+        .filter(|node| node.name.contains(anchor))
         .collect();
 
     let mut roots: HashMap<u64, (bool, Option<[f64; 4]>)> = HashMap::new();
@@ -1007,7 +1020,7 @@ async fn panes(client: &mut Client) -> Result<()> {
     let mut rows: Vec<(u64, usize)> = totals.into_iter().collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.1));
     println!(
-        "{} nodes total, {} panes found via {ANCHOR:?} (inspect {elapsed:.1}ms)\n",
+        "{} nodes total, {} panes found via {anchor:?} (inspect {elapsed:.1}ms)\n",
         snapshot.nodes.len(),
         rows.len()
     );
@@ -1466,7 +1479,9 @@ async fn run_qa(
                     n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
                 });
                 if !there && open_named(client, want).await.is_err() {
-                    let _ = press_named(client, "Home").await;
+                    if let Some(home) = reach::profile().home_opener.as_deref() {
+                        let _ = press_named(client, home).await;
+                    }
                     settle(client, None).await?;
                     if let Err(error) = open_named(client, want).await {
                         open_error = Some(format!("could not open {want:?}: {error}"));
@@ -2223,7 +2238,9 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
          */
         let (here, _) = inspect(client).await?;
         if reach::project_opener(&here.nodes).is_none() {
-            let _ = click_named_quiet(client, "Home").await;
+            if let Some(home) = reach::profile().home_opener.as_deref() {
+                let _ = click_named_quiet(client, home).await;
+            }
             tokio::time::sleep(Duration::from_millis(600)).await;
         }
         let (tree, _) = inspect(client).await?;
@@ -2299,7 +2316,9 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     if surface.opener == reach::PROJECT_TAB {
         return Ok(false);
     }
-    let _ = click_named_quiet(client, "Home").await;
+    if let Some(home) = reach::profile().home_opener.as_deref() {
+        let _ = click_named_quiet(client, home).await;
+    }
     tokio::time::sleep(Duration::from_millis(400)).await;
     if click_named_quiet(client, &opener).await.is_err() {
         return Ok(false);
@@ -2496,7 +2515,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
     // Named, so the manual worklist at the end is what this run actually met.
     let mut skipped_native: Vec<String> = Vec::new();
 
-    for surface in reach::SURFACES {
+    for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
             continue;
         }
@@ -2585,7 +2604,10 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             if !reach::onscreen(node) {
                 here.unreachable += 1;
             } else if node.name.to_lowercase().starts_with("collapse ")
-                || node.name.eq_ignore_ascii_case("New project")
+                || reach::profile()
+                    .deferred_controls
+                    .iter()
+                    .any(|c| node.name.eq_ignore_ascii_case(c))
                 || node.name.starts_with("Hide ")
                 || reach::folds_a_section(&node.name)
             {
@@ -2795,7 +2817,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             let (after_click, _) = inspect(client).await?;
             if reach::modal_open(&after_click.nodes) {
                 let trapped =
-                    sweep_modal(client, &name, &mut here, &mut failures, surface.name).await?;
+                    sweep_modal(client, &name, &mut here, &mut failures, &surface.name).await?;
                 if trapped {
                     /*
                      * Everything still in the plan is unreachable behind the
@@ -3232,7 +3254,7 @@ async fn main() -> Result<()> {
             }
         }
         "click" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("Settings");
+            let want = args.get(1).map(String::as_str).unwrap_or("");
             nodes(&mut client).await?;
             click_named(&mut client, want).await?;
         }
@@ -3353,7 +3375,11 @@ async fn main() -> Result<()> {
         "key" => {
             let name = args.get(1).map(String::as_str).unwrap_or("pageup");
             let count: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1);
-            let over = args.get(3).map(String::as_str).unwrap_or("Conversation");
+            let fallback = reach::profile()
+                .transcript_region
+                .clone()
+                .unwrap_or_default();
+            let over = args.get(3).map(String::as_str).unwrap_or(&fallback);
             press_key(&mut client, name, count, over).await?;
         }
         "type" => {
@@ -3367,7 +3393,11 @@ async fn main() -> Result<()> {
         // This asks the node's own scroll container to move, which is what
         // `scroll` should have been able to do all along.
         "drag" => {
-            let want = args.get(1).map(String::as_str).unwrap_or("Conversation");
+            let fallback = reach::profile()
+                .transcript_region
+                .clone()
+                .unwrap_or_default();
+            let want = args.get(1).map(String::as_str).unwrap_or(&fallback);
             let dy: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(-400.0);
             let times: usize = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
             let (snapshot, _) = inspect(&mut client).await?;
@@ -3401,7 +3431,11 @@ async fn main() -> Result<()> {
         "scroll" => {
             let ticks: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(120);
             let delta: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(-80.0);
-            let over = args.get(3).map(String::as_str).unwrap_or("Conversation");
+            let fallback = reach::profile()
+                .transcript_region
+                .clone()
+                .unwrap_or_default();
+            let over = args.get(3).map(String::as_str).unwrap_or(&fallback);
             let count = nodes(&mut client).await?;
             hover_over(&mut client, over).await?;
             report::show("before", &metrics(&mut client).await?);
