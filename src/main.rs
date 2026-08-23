@@ -3439,8 +3439,16 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             } else {
                 after_click
             };
-            if let Some(why) = sweep::judge(&case, &before.nodes, &after.nodes) {
-                failures.push((surface.name.to_owned(), name, why));
+            if sweep::judge(&case, &before.nodes, &after.nodes).is_some() {
+                // Backend-backed controls can acknowledge immediately and
+                // update the semantic tree on the next task. Retry only a
+                // would-be failure, so fast controls do not all pay for the
+                // slowest one.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let (settled, _) = inspect(client).await?;
+                if let Some(why) = sweep::judge(&case, &before.nodes, &settled.nodes) {
+                    failures.push((surface.name.to_owned(), name, why));
+                }
             }
         }
 
