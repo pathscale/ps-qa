@@ -1524,8 +1524,12 @@ async fn run_qa(
         if click_error.is_none()
             && let Some(key) = check.key.as_deref()
         {
-            let field = check.type_into.as_deref().unwrap_or("");
-            if let Err(error) = press_key(client, key, 1, field).await {
+            let target = check
+                .key_on
+                .as_deref()
+                .or(check.type_into.as_deref())
+                .unwrap_or("");
+            if let Err(error) = press_key(client, key, 1, target).await {
                 click_error = Some(format!("could not send {key:?}: {error}"));
             }
         }

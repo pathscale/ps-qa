@@ -126,6 +126,13 @@ pub enum Expect {
     /// This is a rendered-order assertion, not DOM order. It verifies list
     /// placement using the boxes a person actually sees.
     Above,
+    /// The exact semantic node's exposed value changed after the action.
+    ///
+    /// This is the outcome for sliders, switches, and other value-bearing
+    /// controls whose geometry does not change when they work. The node id is
+    /// carried from the before snapshot so a repeated accessible name cannot
+    /// satisfy the assertion with a neighbouring row.
+    ValueChanges,
 }
 
 /// One thing that must be true of the running panel.
@@ -161,6 +168,11 @@ pub struct Check {
     pub text: Option<String>,
     /// A final named key such as Enter or Escape, sent to `type_into`.
     pub key: Option<String>,
+    /// Focus this named semantic control before sending `key`.
+    ///
+    /// Unlike `type_into`, this accepts any value-bearing role, including a
+    /// slider. Name resolution produces a node id before the action is sent.
+    pub key_on: Option<String>,
     /// The second named node for a relative-position expectation.
     pub compare: Option<String>,
     /// Opt into generic coordinate-pointer activation instead of semantic
@@ -400,6 +412,33 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::ValueChanges => {
+            let before_node = matching(before, &check.subject)
+                .into_iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| {
+                    format!("no painted node matching {:?} before action", check.subject)
+                })?;
+            let after_node = after
+                .iter()
+                .find(|node| node.id == before_node.id)
+                .ok_or_else(|| format!("node {} disappeared after action", before_node.id))?;
+            let old = before_node.value.as_deref().ok_or_else(|| {
+                format!(
+                    "node {} has no semantic value before action",
+                    before_node.id
+                )
+            })?;
+            let new = after_node.value.as_deref().ok_or_else(|| {
+                format!("node {} has no semantic value after action", after_node.id)
+            })?;
+            if old == new {
+                return Err(format!(
+                    "semantic value for {:?} stayed {:?}",
+                    check.subject, old
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -419,7 +458,7 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
             current = check.group.clone();
             out.push_str(&format!("\n{current}\n"));
         }
-        let action = match (&check.hover, &check.click, check.press) {
+        let mut action = match (&check.hover, &check.click, check.press) {
             (Some(h), Some(c), true) => format!("hover {h:?}, press {c:?}"),
             (Some(h), Some(c), false) => format!("hover {h:?}, activate {c:?}"),
             (Some(h), None, _) => format!("hover {h:?}"),
@@ -427,6 +466,12 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
             (None, Some(c), false) => format!("activate {c:?}"),
             (None, None, _) => "observe only".to_owned(),
         };
+        if let (Some(key), Some(target)) = (
+            &check.key,
+            check.key_on.as_ref().or(check.type_into.as_ref()),
+        ) {
+            action.push_str(&format!(", key {key:?} on {target:?}"));
+        }
         out.push_str(&format!(
             "  {:<26} {}\n{:<29}{} -> {:?} {:?}\n",
             check.id, check.what, "", action, check.expect, check.subject
@@ -455,7 +500,8 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::Check;
+    use super::{Check, Expect, verdict};
+    use blitz_control_protocol::SemanticNode;
 
     fn parse(extra: &str) -> Check {
         let ron = format!(
@@ -481,5 +527,43 @@ mod tests {
         assert_eq!(check.text.as_deref(), Some("qa audit newest"));
         assert_eq!(check.key.as_deref(), Some("Enter"));
         assert_eq!(check.compare.as_deref(), Some("older"));
+    }
+
+    #[test]
+    fn a_value_check_follows_the_same_node_id() {
+        let check = Check {
+            id: "slider".into(),
+            group: "settings".into(),
+            what: "the slider moves".into(),
+            open: None,
+            hover: None,
+            click: None,
+            type_into: None,
+            text: None,
+            key: Some("Right".into()),
+            key_on: Some("Response verbosity".into()),
+            compare: None,
+            press: false,
+            subject: "Response verbosity".into(),
+            expect: Expect::ValueChanges,
+        };
+        let node = |id, value: &str| SemanticNode {
+            id,
+            parent: None,
+            role: "slider".into(),
+            name: "Response verbosity".into(),
+            value: Some(value.into()),
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 100.0, 20.0]),
+        };
+
+        assert!(verdict(&check, &[node(7, "0")], &[node(7, "1")]).is_ok());
+        assert!(verdict(&check, &[node(7, "0")], &[node(7, "0")]).is_err());
+        assert!(
+            verdict(&check, &[node(7, "0")], &[node(7, "0"), node(8, "1")],).is_err(),
+            "a neighbouring repeated control cannot satisfy the check"
+        );
     }
 }
