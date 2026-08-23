@@ -339,6 +339,17 @@ pub enum Command {
         surface: Option<String>,
     },
 
+    /// Count reachable, unreachable, anonymous and manual controls on every
+    /// surface without activating ordinary controls.
+    ///
+    /// Navigation, section expansion and row hover use semantic node ids. This
+    /// is the fast answer to "what can an agent reach?"; use `cover` when the
+    /// outcome of pressing every eligible control is actually required.
+    Inventory {
+        /// Restrict to one surface.
+        surface: Option<String>,
+    },
+
     /// Drive every control named by the checks and judge what the renderer did
     /// with it. Exits 1 on any failure.
     Qa {

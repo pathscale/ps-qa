@@ -69,6 +69,7 @@ ps-qa list                       # every check, what it drives, what it asserts
 ps-qa qa                         # run them all
 ps-qa qa dialog                  # one group
 ps-qa qa dialog-cancel-dismisses # one check, by id
+ps-qa inventory                  # fast reachability counts on every surface
 ```
 
 `list` needs no running app. Everything else does. Exit code is 1 if any check
@@ -94,6 +95,12 @@ ps-qa nodes               # tree size and a role histogram
 use semantic activation by default: resolve a name with `find`, retain the node
 id, and act on that id. When repeated rows intentionally share an accessible
 name, `click --id` selects the intended row without coordinates.
+
+`inventory` navigates, expands and hovers configured surfaces with semantic
+node-id actions, then counts reachable, unreachable, anonymous and manual
+buttons without activating the buttons being counted. `cover` is the slower,
+mutating sweep used only when every eligible control's activation outcome is
+required.
 
 `dom` is usually the fastest way to the answer: a control that writes its state
 but never appears is nearly always a hidden or zero-sized *ancestor*, which the
