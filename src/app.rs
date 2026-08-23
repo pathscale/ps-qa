@@ -32,6 +32,8 @@
 //!     close_prefixes: ["Close "],
 //!     row_action_prefixes: ["Rename "],
 //!     fold_prefixes: ["Collapse ", "Hide "],
+//!     deferred_controls: ["Start setup"],
+//!     inert_controls: ["Synchronize"],
 //!     transcript_region: Some("Conversation"),
 //!     home_opener: Some("Home"),
 //! )
@@ -145,6 +147,13 @@ pub struct AppProfile {
     /// the plan with it, exactly as a collapse does. A "new document" control
     /// is the usual example; an application will have its own or none.
     pub deferred_controls: Vec<String>,
+    /// Controls whose successful effect is outside the semantic tree.
+    ///
+    /// Matched as accessible-name prefixes. A clipboard write or backend
+    /// refresh may legitimately leave the rendered component tree unchanged;
+    /// the application must declare that weaker contract explicitly rather
+    /// than teaching the harness product labels.
+    pub inert_controls: Vec<String>,
 }
 
 impl AppProfile {
@@ -265,6 +274,7 @@ mod tests {
             transcript_region: Some("Conversation".to_owned()),
             home_opener: Some("Home".to_owned()),
             deferred_controls: vec!["New project".to_owned()],
+            inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],

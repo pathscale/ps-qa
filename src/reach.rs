@@ -456,21 +456,6 @@ pub fn dismissers(nodes: &[SemanticNode]) -> Vec<(u64, String)> {
     found
 }
 
-/// Whether this restarts the app or reopens onboarding.
-///
-/// `Welcome Tutorial` and `Restart` put a setup flow in front of everything and
-/// open tabs of their own. After a Settings sweep pressed them the window was
-/// left with `Close setup` in the strip and Analytics could not be opened at
-/// all - three clicks, no navigation - while Home still worked. That is the
-/// sweep breaking its own run, not a defect in the button.
-///
-/// Left to a person, because "does the tutorial replay" is a question about a
-/// flow rather than about one control's promise.
-pub fn restarts_the_app(name: &str) -> bool {
-    const DISRUPTIVE: &[&str] = &["Welcome Tutorial", "Restart", "Reset all", "Sign out"];
-    DISRUPTIVE.iter().any(|entry| name.starts_with(entry))
-}
-
 /// Whether this closes a surface the sweep still has to stand on.
 ///
 /// `Close Settings` retires the tab that every later surface is reached
@@ -493,6 +478,18 @@ pub fn closes_a_surface(name: &str) -> bool {
      */
     profile()
         .close_prefixes
+        .iter()
+        .any(|prefix| name.starts_with(prefix.as_str()))
+}
+
+/// Whether the application declares this control semantically inert.
+///
+/// Prefixes live in the application profile. The harness cannot infer that a
+/// refresh talks to a backend or that a toggle changes paint only, and product
+/// labels never belong in this crate.
+pub fn is_inert_control(name: &str) -> bool {
+    profile()
+        .inert_controls
         .iter()
         .any(|prefix| name.starts_with(prefix.as_str()))
 }
@@ -553,28 +550,6 @@ pub fn enclosing_dialog(nodes: &[SemanticNode], dismiss_id: u64) -> Vec<u64> {
         best = kept;
     }
     best
-}
-
-/// Whether pressing this is likely to raise a macOS file chooser.
-///
-/// Not an exclusion - these are pressed like everything else - but a cue to
-/// send Escape straight afterwards. A native panel is not in the webview: the
-/// semantic tree cannot see it, no synthesised click can dismiss it, and it
-/// holds the user's screen until a person closes it. Testing the control and
-/// then getting out of the way is what a person does, and it is the only shape
-/// that satisfies "test everything" without leaving the app wedged.
-pub fn may_open_native_chooser(name: &str) -> bool {
-    const NATIVE: &[&str] = &[
-        "Attach files",
-        "Add dir",
-        "Select backup file",
-        "Choose",
-        "Browse",
-        "Open folder",
-        "Import",
-        "Export",
-    ];
-    NATIVE.iter().any(|entry| name.starts_with(entry))
 }
 
 /// Whether this is a panel section header, which folds the rows beneath it.
@@ -947,18 +922,6 @@ mod tests {
 
         let ordinary = vec![node(1, "button", "Send", Some([0.0, 0.0, 20.0, 20.0]))];
         assert!(!modal_open(&ordinary));
-    }
-
-    #[test]
-    fn onboarding_and_restart_are_left_alone() {
-        // These left the window with `Close setup` in the strip and Analytics
-        // unreachable for the rest of the run.
-        assert!(restarts_the_app("Welcome Tutorial"));
-        assert!(restarts_the_app("Restart"));
-        // Ordinary Settings controls are still swept.
-        assert!(!restarts_the_app("Re-check"));
-        assert!(!restarts_the_app("Refresh"));
-        assert!(!restarts_the_app("Default model"));
     }
 
     #[test]
