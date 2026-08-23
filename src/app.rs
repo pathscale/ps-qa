@@ -27,6 +27,7 @@
 //!         (name: "dashboard",   opener: "Dashboard"),
 //!     ],
 //!     permanent_surfaces: ["Dashboard", "Preferences"],
+//!     navigation_controls: ["Open Preferences"],
 //!     sections: ["Records", "Activity"],
 //!     document_row_markers: [" open \u{b7} "],
 //!     close_prefixes: ["Close "],
@@ -93,6 +94,11 @@ pub struct AppProfile {
     /// strip. Some applications double a tab's label in its accessible name
     /// (`DashboardDashboard`), so both forms are accepted.
     pub permanent_surfaces: Vec<String>,
+    /// Other controls that leave their current surface.
+    ///
+    /// These are exercised as surface openers, not in the middle of a plan
+    /// whose remaining controls would disappear after navigation.
+    pub navigation_controls: Vec<String>,
     /// Collapsible section headers, by their label without the count.
     ///
     /// A collapse takes everything under it off screen, so these are pressed
@@ -295,6 +301,7 @@ mod tests {
                 marker: Some("Overview heading".to_owned()),
             }],
             permanent_surfaces: vec!["Dashboard".to_owned()],
+            navigation_controls: vec!["Open Preferences".to_owned()],
             sections: vec!["Records".to_owned()],
             transcript_region: Some("Message history".to_owned()),
             home_opener: Some("Dashboard".to_owned()),

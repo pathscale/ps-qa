@@ -3232,7 +3232,9 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                  * those descendants in the sweep plan.
                  */
                 collapsers.push((node.id, node.name.clone()));
-            } else if reach::navigates(&node.name) {
+            } else if reach::navigates(&node.name)
+                || reach::opens_document_row(&tree.nodes, node.id)
+            {
                 // Swept as the opener of its own surface, not here: pressing it
                 // mid-plan navigates away and every later button on this
                 // surface reads as vanished.
