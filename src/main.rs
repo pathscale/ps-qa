@@ -2567,6 +2567,29 @@ async fn hover_all_rows(client: &mut Client) -> Result<usize> {
 /// mutate the profile merely to obtain counts. Navigation, disclosure expansion
 /// and hover are still necessary preconditions, and all three are node-id
 /// actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryClass {
+    Manual,
+    Anonymous,
+    Unreachable,
+    Disabled,
+    Reachable,
+}
+
+fn inventory_class(node: &SemanticNode, manual: bool) -> InventoryClass {
+    if manual {
+        InventoryClass::Manual
+    } else if node.name.trim().is_empty() {
+        InventoryClass::Anonymous
+    } else if !reach::onscreen(node) {
+        InventoryClass::Unreachable
+    } else if !node.enabled {
+        InventoryClass::Disabled
+    } else {
+        InventoryClass::Reachable
+    }
+}
+
 async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize> {
     #[derive(serde::Serialize)]
     struct SurfaceRow {
@@ -2576,6 +2599,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         reachable: usize,
         unreachable: usize,
         anonymous: usize,
+        disabled: usize,
         manual: usize,
         unverified: usize,
         sections_opened: usize,
@@ -2598,6 +2622,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         reachable: usize,
         unreachable: usize,
         anonymous: usize,
+        disabled: usize,
         manual: usize,
         unverified: usize,
         surfaces: Vec<SurfaceRow>,
@@ -2618,6 +2643,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 reachable: 0,
                 unreachable: 0,
                 anonymous: 0,
+                disabled: 0,
                 manual: 0,
                 unverified: 0,
                 sections_opened: 0,
@@ -2635,6 +2661,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 reachable: 0,
                 unreachable: 0,
                 anonymous: 0,
+                disabled: 0,
                 manual: 0,
                 unverified: 0,
                 sections_opened,
@@ -2652,66 +2679,35 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             .iter()
             .filter(|node| reach::interactive(node) && mine.contains(&node.id))
             .collect();
-        let reachable = components
+        let classes: Vec<_> = components
             .iter()
-            .filter(|node| reach::onscreen(node) && node.enabled)
-            .count();
-        let unreachable = components.len() - reachable;
-        let anonymous = components
-            .iter()
-            .filter(|node| node.name.trim().is_empty())
-            .count();
-        let manual = components
-            .iter()
-            .filter(|node| reach::requires_manual_release_check(&node.name))
-            .count();
-        let unverified = components
-            .iter()
-            .filter(|node| {
-                reach::onscreen(node)
-                    && node.enabled
-                    && !reach::requires_manual_release_check(&node.name)
-            })
-            .count();
+            .map(|node| inventory_class(node, reach::requires_manual_release_check(&node.name)))
+            .collect();
+        let count = |class| classes.iter().filter(|found| **found == class).count();
+        let reachable = count(InventoryClass::Reachable);
+        let unreachable = count(InventoryClass::Unreachable);
+        let anonymous = count(InventoryClass::Anonymous);
+        let disabled = count(InventoryClass::Disabled);
+        let manual = count(InventoryClass::Manual);
+        let unverified = reachable;
         for node in &components {
-            let mut reasons = Vec::new();
-            if node.name.trim().is_empty() {
-                reasons.push("anonymous");
-            }
-            if !node.visible {
-                reasons.push("hidden");
-            }
-            if !node.enabled {
-                reasons.push("disabled");
-            }
-            if !node
-                .bounds
-                .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-            {
-                reasons.push("no-box");
-            }
             let manual = reach::requires_manual_release_check(&node.name);
-            let reason = if manual {
-                "native-dialog-or-external".to_owned()
-            } else if reasons.is_empty() {
-                "no outcome check matched".to_owned()
-            } else {
-                reasons.join(",")
+            let class = inventory_class(node, manual);
+            let (classification, reason) = match class {
+                InventoryClass::Manual => ("excluded-manual", "native-dialog-or-external"),
+                InventoryClass::Anonymous => ("failed-anonymous", "no accessible name"),
+                InventoryClass::Unreachable if !node.visible => ("failed-reachability", "hidden"),
+                InventoryClass::Unreachable => ("failed-reachability", "no-box"),
+                InventoryClass::Disabled => ("state-disabled", "disabled in current state"),
+                InventoryClass::Reachable => ("reachable-unverified", "no outcome check matched"),
             };
             controls.push(ControlRow {
                 surface: surface.name.clone(),
                 id: node.id,
                 role: node.role.clone(),
                 name: node.name.clone(),
-                classification: if manual {
-                    "excluded-manual"
-                } else if !reasons.is_empty() {
-                    "failed-reachability"
-                } else {
-                    "reachable-unverified"
-                }
-                .to_owned(),
-                reason,
+                classification: classification.to_owned(),
+                reason: reason.to_owned(),
             });
         }
         rows.push(SurfaceRow {
@@ -2721,6 +2717,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             reachable,
             unreachable,
             anonymous,
+            disabled,
             manual,
             unverified,
             sections_opened,
@@ -2733,6 +2730,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         reachable: rows.iter().map(|row| row.reachable).sum(),
         unreachable: rows.iter().map(|row| row.unreachable).sum(),
         anonymous: rows.iter().map(|row| row.anonymous).sum(),
+        disabled: rows.iter().map(|row| row.disabled).sum(),
         manual: rows.iter().map(|row| row.manual).sum(),
         unverified: rows.iter().map(|row| row.unverified).sum(),
         surfaces: rows,
@@ -3962,7 +3960,46 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::name_matches;
+    use super::{InventoryClass, inventory_class, name_matches};
+    use blitz_control_protocol::SemanticNode;
+
+    fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
+        SemanticNode {
+            id: 1,
+            parent: None,
+            role: "button".into(),
+            name: name.into(),
+            value: None,
+            enabled,
+            visible,
+            selected: false,
+            bounds: Some([0.0, 0.0, 20.0, 20.0]),
+        }
+    }
+
+    #[test]
+    fn inventory_categories_are_mutually_exclusive() {
+        assert_eq!(
+            inventory_class(&component("Attach files", true, true), true),
+            InventoryClass::Manual
+        );
+        assert_eq!(
+            inventory_class(&component("", false, false), false),
+            InventoryClass::Anonymous
+        );
+        assert_eq!(
+            inventory_class(&component("Save", false, true), false),
+            InventoryClass::Disabled
+        );
+        assert_eq!(
+            inventory_class(&component("Hidden", true, false), false),
+            InventoryClass::Unreachable
+        );
+        assert_eq!(
+            inventory_class(&component("Refresh", true, true), false),
+            InventoryClass::Reachable
+        );
+    }
 
     /// A bare word is a substring, because that is how a control is recalled.
     #[test]
