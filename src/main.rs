@@ -3331,19 +3331,16 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             /*
              * If that opened a modal, sweep it and then prove it closes.
              *
-             * This is the check the harness did not have, and the gap a user
-             * found by hand: the fork dialog renders two `Cancel` controls and
-             * an Escape handler, all three do nothing, and the app is trapped
-             * with every control behind the modal unreachable. Judging each
-             * button against its own name can never see that - the question is
-             * not "did Cancel act" but "can I still get out of here".
+             * Judging each button against its own name cannot prove the
+             * foreground dialog can be dismissed. The relevant outcome is
+             * whether the application can return to the covered surface.
              *
              * A dialog that will not dismiss is reported and the run continues
              * from a restart rather than grinding on against a window nobody
              * can use.
              */
             let (after_click, _) = inspect(client).await?;
-            if reach::modal_open(&after_click.nodes) {
+            let after = if reach::modal_open(&after_click.nodes) {
                 let trapped =
                     sweep_modal(client, &name, &mut here, &mut failures, &surface.name).await?;
                 if trapped {
@@ -3361,8 +3358,10 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                     here.blocked += remaining;
                     break;
                 }
-            }
-            let (after, _) = inspect(client).await?;
+                inspect(client).await?.0
+            } else {
+                after_click
+            };
             if let Some(why) = sweep::judge(&case, &before.nodes, &after.nodes) {
                 failures.push((surface.name.to_owned(), name, why));
             }
