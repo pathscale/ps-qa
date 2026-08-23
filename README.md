@@ -136,6 +136,7 @@ accessible name, then activates the exact semantic node id.
 | Expectation | Passes when |
 | --- | --- |
 | `Paints` | the subject exists, is visible, and has a **non-zero box** |
+| `Enabled` | a painted subject accepts input after the action |
 | `Vanishes` | nothing matching is on screen (it may remain in the tree) |
 | `PaintsMore` | more matching nodes are on screen than before |
 | `Grows` | more matching nodes are in the tree than before |

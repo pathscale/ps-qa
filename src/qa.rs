@@ -55,6 +55,11 @@ pub enum Expect {
     /// tree and on no screen, which is how a broken control passes a test that
     /// only asked whether it existed.
     Paints,
+    /// A painted named node is enabled after the action.
+    ///
+    /// Use this for validation flows where entering a valid value unlocks a
+    /// Save or Send control without changing its geometry.
+    Enabled,
     /// No node matching the name exists.
     ///
     /// The assertion for a control that must *not* be reachable, and for
@@ -325,6 +330,26 @@ pub fn verdict(
                     boxes.join(", ")
                 ));
             }
+        }
+        Expect::Enabled => {
+            if found.iter().any(|node| paints(node) && node.enabled) {
+                return Ok(());
+            }
+            let states = found
+                .iter()
+                .take(3)
+                .map(|node| {
+                    format!(
+                        "id={} enabled={} bounds={:?}",
+                        node.id, node.enabled, node.bounds
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "no painted, enabled node matching {:?} ({})",
+                check.subject,
+                states.join(", ")
+            ));
         }
         Expect::Absent => {
             if !found.is_empty() {
@@ -641,5 +666,27 @@ mod tests {
         )
         .expect_err("the textbox does not paint");
         assert!(error.contains("other painted matches: button id=8"));
+    }
+
+    #[test]
+    fn enabled_requires_the_control_to_paint_and_accept_input() {
+        let mut check = parse("");
+        check.subject = "Save".into();
+        check.expect = Expect::Enabled;
+        let node = |enabled, bounds| SemanticNode {
+            id: 7,
+            parent: None,
+            role: "button".into(),
+            name: "Save".into(),
+            value: None,
+            enabled,
+            visible: true,
+            selected: false,
+            bounds,
+        };
+
+        assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 20.0, 20.0]))]).is_ok());
+        assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 20.0, 20.0]))]).is_err());
+        assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 0.0, 0.0]))]).is_err());
     }
 }
