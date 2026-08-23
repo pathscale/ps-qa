@@ -7,11 +7,11 @@
 //! collapsible sections, the region its transcript scrolls inside, are facts
 //! about *that* application and belong with it.
 //!
-//! They were hardcoded here. `reach.rs` knew AgencyZero had surfaces called
-//! Home, Settings and Analytics; `folds_a_section` listed six section names
-//! from one product; the scroll commands defaulted to a region called
-//! "Conversation". Pointing this binary at a second application meant editing
-//! the harness, which is the definition of the wrong seam.
+//! They were hardcoded in the harness. `reach.rs` knew one product's three
+//! surface names; `folds_a_section` listed that product's six section headers;
+//! the scroll commands defaulted to its transcript region. Pointing this binary
+//! at a second application meant editing the harness, which is the definition
+//! of the wrong seam.
 //!
 //! # How an application describes itself
 //!
@@ -26,14 +26,21 @@
 //!         (name: "settings", opener: "Settings"),
 //!         (name: "home",     opener: "Home"),
 //!     ],
-//!     permanent_surfaces: ["Home", "Settings", "Analytics"],
-//!     sections: ["Items", "Task log"],
-//!     transcript_region: "Conversation",
-//!     home_opener: "Home",
+//!     permanent_surfaces: ["Home", "Settings"],
+//!     sections: ["Items", "Log"],
+//!     document_row_markers: [" open \u{b7} "],
+//!     close_prefixes: ["Close "],
+//!     row_action_prefixes: ["Rename "],
+//!     fold_prefixes: ["Collapse ", "Hide "],
+//!     transcript_region: Some("Conversation"),
+//!     home_opener: Some("Home"),
 //! )
 //! ```
 //!
-//! # The default is not AgencyZero
+//! Every field is optional. One an application does not set is simply a rule the
+//! harness does not apply.
+//!
+//! # The default names no product
 //!
 //! [`AppProfile::default`] is deliberately empty apart from the structural
 //! pieces every Blitz application has. An application that ships no profile
@@ -55,6 +62,15 @@ pub struct SurfaceSpec {
     /// first project-like tab is", resolved at run time, for applications whose
     /// document names are not fixed strings.
     pub opener: String,
+}
+
+/// A control that opens a native modal, and what to call it in the report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeChooser {
+    /// The control's accessible name.
+    pub label: String,
+    /// What the application calls the thing it opens, for the worklist.
+    pub command: String,
 }
 
 /// Everything about the application under test that the harness cannot infer.
@@ -88,9 +104,8 @@ pub struct AppProfile {
     /// A document's own name is not matchable: it is user data, and in a
     /// scrubbed QA profile it differs per build. What is stable is the summary
     /// the list renders beside it, so an application states the fragments of
-    /// that summary instead. AgencyZero rows read `... 1 open . 2 turns` or
-    /// `no working directory`; another application will render something else
-    /// entirely, and one that ships none simply has no row fallback.
+    /// that summary instead - a count, an age, a path. An application that
+    /// ships none simply has no row fallback.
     pub document_row_markers: Vec<String>,
     /// Prefixes of controls that close a surface, e.g. `Close `.
     ///
@@ -108,11 +123,22 @@ pub struct AppProfile {
     /// Matched case-insensitively. Swept last for the same reason a section
     /// header is: pressing one takes everything beneath it off screen.
     pub fold_prefixes: Vec<String>,
+    /// Controls that hand the screen to a native modal the harness cannot drive.
+    ///
+    /// A native file panel is not in the tree, no synthesised click or key
+    /// reaches it, and opening one unattended leaves a run stuck behind a
+    /// window it cannot dismiss. These are counted and named in the report
+    /// rather than pressed, so the exceptions stay visible instead of becoming
+    /// controls nobody remembers to test by hand.
+    ///
+    /// `label` is the control's accessible name; `command` is whatever the
+    /// application wants printed beside it in the worklist.
+    pub native_choosers: Vec<NativeChooser>,
     /// Controls that must be pressed last, beyond the collapsible sections.
     ///
     /// A control that opens a new document navigates away and takes the rest of
-    /// the plan with it, exactly as a collapse does. `New project` is
-    /// AgencyZero's; another application will have its own or none.
+    /// the plan with it, exactly as a collapse does. A "new document" control
+    /// is the usual example; an application will have its own or none.
     pub deferred_controls: Vec<String>,
 }
 
@@ -221,6 +247,10 @@ mod tests {
             close_prefixes: vec!["Close ".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],
             fold_prefixes: vec!["Collapse ".to_owned()],
+            native_choosers: vec![NativeChooser {
+                label: "Attach files".to_owned(),
+                command: "choose_attachments".to_owned(),
+            }],
         };
         let text = ron::to_string(&profile).expect("serialises");
         let back: AppProfile = ron::from_str(&text).expect("parses");

@@ -2,13 +2,13 @@
 //!
 //! # Why this exists
 //!
-//! The sweep next door plans from one snapshot of whatever surface the app
-//! happened to open on, and drops any button whose box is `0x0`. Measured
-//! against a real QA profile that is not a detail: 286 buttons in the tree, 64
-//! with a box, and 222 quietly discarded. None of the 222 were hidden. They
-//! were `Pin project` thirty times over, `Rename <project>` twenty, `Delete
-//! <project>` fifteen: the row controls the owner asked to have audited, on a
-//! Home surface the sweep never visited.
+//! A sweep that plans from one snapshot of whatever surface the application
+//! happened to open on, and drops any button whose box is `0x0`, measures a
+//! fraction of the window and says nothing about the rest. Against a real
+//! application that is not a detail: in the run that motivated this module,
+//! 286 buttons were in the tree, 64 had a box, and 222 were quietly discarded.
+//! None of the 222 were hidden. They were the per-row controls, on a surface
+//! the sweep never visited.
 //!
 //! A skip is indistinguishable from a pass in the output, so a run that touched
 //! a fifth of the window reported "every button acted". That is the whole bug.
@@ -39,9 +39,9 @@ pub use crate::app::SurfaceSpec as Surface;
 /// Every top-level surface, in the order they are swept.
 ///
 /// Read from the application's profile. The order is the application's to
-/// choose and it matters: AgencyZero puts Home last because Home owns the
-/// destructive project-row controls, so visiting it first would delete the rows
-/// the other surfaces are reached through. A harness cannot know that.
+/// choose and it matters: a surface that owns destructive row controls belongs
+/// last, or visiting it first deletes the rows the other surfaces are reached
+/// through. A harness cannot know which surface that is.
 ///
 /// Every surface names an opener, including the one the app happens to launch
 /// on. An empty opener meant "wherever we already are", which held only until
@@ -51,20 +51,19 @@ pub fn surfaces() -> &'static [crate::app::SurfaceSpec] {
     &profile().surfaces
 }
 
-/// Stands in for "the first project tab in the strip", resolved when the sweep
-/// runs because the profile's project names are scrubbed and vary per profile.
+/// Stands in for "the first document tab in the strip", resolved when the sweep
+/// runs because a document's own name is user data and varies per profile.
 pub const PROJECT_TAB: &str = "\u{0}project-tab";
 
-/// A control that opens a project, either its tab or its row on Home.
+/// A control that opens a document, either its tab or its row in a list.
 ///
 /// Prefers a tab already in the strip, because activating one is a pane switch
-/// rather than a load. A fresh profile has no project tabs open at all - the
-/// strip is just `HomeHome` - so the fallback is a project row on Home, which
-/// is what the owner clicks to open one.
+/// rather than a load. A fresh profile may have no document tabs open at all,
+/// so the fallback is a row in the root surface's list.
 ///
-/// A row is recognised by the summary the list renders into its name ("0 open ·
-/// 1 turns"), which every row has and no other control does. Matching the
-/// scrubbed project name itself is not possible: it differs per profile.
+/// A row is recognised by the summary the list renders beside its name, which
+/// the application states as `document_row_markers`. Matching the document's own
+/// name is not possible: it is user data and differs per profile.
 pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
     let closes: Vec<String> = nodes
         .iter()
@@ -78,11 +77,11 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         })
         .collect();
     /*
-     * A project tab, which is any doubled label that is not one of the three
-     * permanent surfaces.
+     * A document tab, which is any doubled label that is not a permanent
+     * surface.
      *
      * This used to filter on `!navigates(name)`, which was correct until
-     * `navigates` was taught that project tabs are navigation - after that it
+     * `navigates` was taught that document tabs are navigation - after that it
      * excluded every candidate and the project surface could never be opened.
      * The two need different questions: `navigates` asks "does pressing this
      * leave the surface I am sweeping", and this asks "is this the way in".
@@ -101,22 +100,15 @@ pub fn project_opener(nodes: &[SemanticNode]) -> Option<String> {
         return Some(tab.name.clone());
     }
     /*
-     * Otherwise a project row on Home, which is what the owner clicks to open
-     * one. A fresh profile has no project tabs in the strip at all, so without
-     * this the surface is unreachable on exactly the runs that matter.
+     * Otherwise a row in the root surface's list, which is what the owner
+     * clicks to open one. A fresh profile may have no document tabs in the
+     * strip at all, so without this the surface is unreachable on exactly the
+     * runs that matter.
      *
-     * Rows are recognised by the summary the list renders into their name - a
-     * working directory, an age, or an open/turn count - because the project
-     * names themselves are scrubbed and differ per profile.
-     */
-    /*
-     * Preferring a project that has items in it.
-     *
-     * The first row on Home has none, and an empty project renders `Items0`,
-     * `Running0`, `Task log 0` with every per-item control absent: the panel
-     * the owner cares about most was on screen as four empty headers. A row
-     * whose summary says "1 open" opens a panel with something in it, so
-     * `New item`, `Copy`, `Clear` and the item rows are there to be pressed.
+     * Preferring a document that has something in it: an empty one renders its
+     * panes as a row of empty headers with every per-item control absent, so
+     * the pane the owner cares about most would be on screen with nothing to
+     * press.
      */
     let rows = || {
         nodes
@@ -234,7 +226,7 @@ pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
 /// Both were tried against the running app and both are wrong. A retained Home
 /// sits *behind* an open project pane and its rows keep real boxes in the same
 /// horizontal band: `Items1` in the panel measured x=953 and Home's
-/// `Recent247` x=965, so a `PANEL_LEFT` cut cannot separate them. Worse, the
+/// a list header at x=965, so a `PANEL_LEFT` cut cannot separate them. Worse, the
 /// retained rows still report `visible` with a non-zero box, so filtering on
 /// visibility keeps every one of them too.
 ///
@@ -267,7 +259,7 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
      * surface at once - which is the situation this exists to end. Eight is
      * deep enough to clear a control's own chrome and reach the pane, and
      * shallow enough not to swallow its neighbour; it is the same depth
-     * `EditableTitle`'s notes use for "an input that is merely hidden still
+     * an in-place editor's notes use for "an input that is merely hidden still
      * walks eight levels to the window root".
      */
     /*
@@ -411,82 +403,11 @@ pub fn opens_native_dialog(name: &str) -> bool {
      * how many controls were not exercised and why. They need a person:
      * `scripts/button-sweep.sh` documents the manual pass.
      */
-    NATIVE_CHOOSERS
+    profile()
+        .native_choosers
         .iter()
-        .any(|exception| name.starts_with(exception.label))
+        .any(|exception| name.starts_with(exception.label.as_str()))
 }
-
-/// One control the sweep will not press, and why.
-pub struct Exception {
-    /// The accessible-name prefix that identifies it.
-    pub label: &'static str,
-    /// The Tauri command that raises the panel, so the list can be re-derived.
-    pub command: &'static str,
-}
-
-/// Every control this harness cannot exercise, enumerated.
-///
-/// Seven, all of them macOS file panels, each traced to the `app.dialog()` call
-/// that raises it. There are no other exceptions: in-app modals are opened and
-/// swept like any other surface.
-///
-/// Re-derive with `grep -n '\.dialog()' apps/gui/src/*.rs` - it is seven call
-/// sites, and if that number changes this list is stale.
-pub const NATIVE_CHOOSERS: &[Exception] = &[
-    Exception {
-        label: "Attach files",
-        command: "choose_attachments",
-    },
-    Exception {
-        label: "Add dir",
-        command: "choose_project_directory",
-    },
-    Exception {
-        label: "Choose a working directory",
-        command: "choose_project_directory",
-    },
-    Exception {
-        label: "Choose the agencyzero data directory",
-        command: "(startup data dir)",
-    },
-    Exception {
-        label: "Select backup file",
-        command: "select_store_backup",
-    },
-    // `Back up & close`, not the panel's own title: same mismatch as `Choose…`.
-    Exception {
-        label: "Back up & close",
-        command: "create_store_backup",
-    },
-    Exception {
-        label: "Export",
-        command: "export_study_events",
-    },
-    // `Restore` raises the restore picker; the old entry named the panel.
-    Exception {
-        label: "Restore",
-        command: "select_store_backup",
-    },
-    /*
-     * The button reads `Choose…`, not anything about a proxy.
-     *
-     * This entry used to say "Agent proxy binary", which is what the row is
-     * called, and matched nothing: the exception is tested against the
-     * *button's* accessible name, and the button beside the AgencyProxy path
-     * is labelled `Choose…` alone. So the sweep pressed it, raised
-     * `Choose an AgencyProxy executable`, and stranded a macOS open panel on
-     * the owner's screen with no way back - `pgrep -lf openAndSavePanel`
-     * shows the residue.
-     *
-     * The lesson for the next entry: check that each label here matches the
-     * control's accessible name in a running build. Counting `.dialog()` call
-     * sites proves the list is the right length, not that any of it matches.
-     */
-    Exception {
-        label: "Choose…",
-        command: "choose_agent_proxy_binary",
-    },
-];
 
 /// Whether the window is showing a modal that has to be dismissed to continue.
 ///
@@ -644,7 +565,7 @@ pub fn may_open_native_chooser(name: &str) -> bool {
 /// Whether this is a panel section header, which folds the rows beneath it.
 ///
 /// The panel's headers are named for their contents and count - `Items1`,
-/// `Running0`, `Task log22`, `Agent I/O0` - not "Collapse Items", so a
+/// `Items0`, `Log22` - not "Collapse Items", so a
 /// name-prefix rule for disclosures misses every one of them. Pressing `Items1`
 /// folds the section, and with it `Fork <item> into a fresh chat`, `Change the
 /// status of ...`, `Edit the description for ...` and `New item`.
@@ -844,11 +765,11 @@ mod tests {
     fn a_zero_box_control_is_not_onscreen() {
         // The exact shape of the 222 discarded controls: in the tree, not
         // hidden, no box.
-        assert!(!onscreen(&node(1, "button", "Pin project", Some([0.0; 4]))));
+        assert!(!onscreen(&node(1, "button", "Row action", Some([0.0; 4]))));
         assert!(onscreen(&node(
             2,
             "button",
-            "Pin project",
+            "Row action",
             Some([10.0, 10.0, 20.0, 20.0])
         )));
     }
@@ -913,38 +834,57 @@ mod tests {
     #[test]
     fn only_the_documented_file_panels_are_exempt() {
         /*
-         * The exception list is exactly the macOS file panels, and every entry
-         * names the command that raises it.
+         * The exemption is exactly the controls the application named, matched
+         * by prefix, and every entry says what it raises.
          *
-         * The old list had grown past that into a general posture of not
-         * opening things, which is how the fork dialog shipped with a Cancel
-         * that does nothing: no run ever opened it. In-app modals are swept
-         * now; only panels outside the webview are exempt, because no
-         * synthesised click or key can reach them.
-         */
-        for name in ["Attach files", "Add dir", "Select backup file…", "Export"] {
-            assert!(opens_native_dialog(name), "{name} is a native panel");
-        }
-        /*
-         * The AgencyProxy chooser, by the name the *button* carries.
+         * Two failure modes this guards, both of which have happened:
          *
-         * Its entry used to read "Agent proxy binary" - the row's label, not
-         * the control's - so it matched nothing and the sweep raised a macOS
-         * open panel it could not dismiss. The name here is what
-         * `ps-qa layout` reports for that button in a running build.
+         * - Too broad. An exemption list that grows into a general posture of
+         *   not opening things is how a dialog ships with a Cancel that does
+         *   nothing: no run ever opened it. In-app modals must still be swept.
+         * - Named wrong. An entry carrying the *row's* label rather than the
+         *   *control's* matches nothing, and the sweep raises a panel it cannot
+         *   dismiss while the list claims it is exempt. That failure is silent:
+         *   the report shows the control as swept.
          */
-        for name in ["Choose…", "Back up & close", "Restore", "Export JSONL"] {
-            assert!(
-                opens_native_dialog(name),
-                "{name} raises a panel the harness cannot dismiss"
-            );
-        }
-        for name in ["Add item", "Send", "Cancel", "Fork this item", "New item"] {
-            assert!(!opens_native_dialog(name), "{name} must be swept");
-        }
-        // Every exception is traceable to the call site that raises it, so the
-        // list can be re-derived rather than trusted.
-        assert!(NATIVE_CHOOSERS.iter().all(|e| !e.command.is_empty()));
+        let profile = crate::app::AppProfile {
+            native_choosers: vec![
+                crate::app::NativeChooser {
+                    label: "Attach files".to_owned(),
+                    command: "choose_attachments".to_owned(),
+                },
+                crate::app::NativeChooser {
+                    label: "Open http".to_owned(),
+                    command: "openExternal".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
+        let exempt = |name: &str| {
+            profile
+                .native_choosers
+                .iter()
+                .any(|e| name.starts_with(e.label.as_str()))
+        };
+        assert!(exempt("Attach files"));
+        // A prefix, so a label that carries its subject still matches.
+        assert!(exempt("Open https://example.invalid/pull/1"));
+        // Ordinary controls are still swept.
+        assert!(!exempt("Send"));
+        assert!(!exempt("Cancel"));
+        assert!(!exempt("New item"));
+
+        // Every exception names what it opens, so the printed worklist is
+        // actionable rather than a list of bare labels.
+        assert!(
+            profile
+                .native_choosers
+                .iter()
+                .all(|e| !e.command.is_empty())
+        );
+
+        // An application that names none exempts nothing.
+        assert!(crate::app::AppProfile::default().native_choosers.is_empty());
     }
 
     #[test]
