@@ -2017,32 +2017,24 @@ async fn open_named(client: &mut Client, want: &str) -> Result<()> {
     Ok(())
 }
 
-/// Move, press and release over the first visible match, for the QA runner.
+/// Send a coordinate-pointer press to the first visible match, when requested.
 ///
-/// `AgentAction::Click` dispatches a `click` and nothing else, so a control
-/// that acts on `mousedown` is invisible to it. The rename pencil is exactly
-/// that - it opens the editor on `mousedown` so the `role="button"` row it sits
-/// inside cannot swallow the press - and a check driven by `click` would assert
-/// the harness rather than the app.
+/// This is an explicit generic hit-testing diagnostic. Application suites use
+/// the node-addressed default and opt into this only when pointer hit-testing
+/// itself is the behavior under test.
 async fn press_named(client: &mut Client, want: &str) -> Result<()> {
     /*
      * Buttons only, and on screen - see `locate_button`.
      *
-     * A control and the thing it opens often share an accessible name -
-     * an in-place editor gives the pencil and its field the same `label` - so a
-     * name-only match picks whichever comes first in the tree. Once the editor
-     * was open, `press "Rename "` landed *inside the text field*, opened
-     * nothing, and the check reported the control dead while a manual press of
-     * the same substring worked. Restricting to buttons makes the target the
-     * control rather than its output.
+     * A control and the thing it opens may share an accessible name, so a
+     * name-only match can select the output instead of the activator.
+     * Restricting this explicit diagnostic to buttons keeps the target clear.
      */
     let (id, b) = locate_button(client, want).await?;
     let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
     if cli::trace() {
         println!("        pressing {want:?} (id {id}) at {x:.0},{y:.0}");
     }
-    // Move first: hover state gates some controls, and a press at a point the
-    // document never saw hovered is not what a mouse does.
     for phase in [PointerPhase::Move, PointerPhase::Down, PointerPhase::Up] {
         let answer = client
             .agent(&AgentControlRequest::Act(AgentAction::Input(
