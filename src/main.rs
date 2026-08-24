@@ -1737,19 +1737,15 @@ async fn settle_for_outcome(
     }
 }
 
-/// Resolve an application-owned opener to the surface it promises to show.
+/// Resolve a literal application-owned surface opener.
 ///
-/// Document names are fixture data, so they match the profile's dynamic
-/// document surface after literal permanent-surface openers are considered.
+/// Dynamic document names and ordinary controls are not interchangeable. An
+/// unknown opener is verified by whether its declared action target paints;
+/// treating every unknown name as a document can skip a required activation.
 fn surface_for_opener(want: &str) -> Option<&'static reach::Surface> {
     reach::surfaces()
         .iter()
         .find(|surface| surface.opener == want)
-        .or_else(|| {
-            reach::surfaces()
-                .iter()
-                .find(|surface| surface.opener == reach::DYNAMIC_DOCUMENT)
-        })
 }
 
 /// Whether a named check target currently occupies a box in the live tree.

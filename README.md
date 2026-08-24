@@ -160,6 +160,19 @@ When the expectation is `ValueChanges`, ps-qa carries that exact text-field
 node id through `SetValue` and compares its semantic value before and after.
 This prevents a neighbouring same-name editor from satisfying the check.
 
+Use `prepare` when a check needs a known semantic state before its measured
+action. ps-qa activates the preparation control by node id, waits for the
+renderer, and only then records the `before` snapshot. That keeps the check
+independently rerunnable and prevents a default-selected control from passing
+without changing anything:
+
+```ron
+prepare: Some("Models"),
+click: Some("Value"),
+subject: "tab:Value",
+expect: SelectionChanges,
+```
+
 For a repeated family rendered by one component from one data array, declare
 the shared contract explicitly with `covers`, while keeping the action and
 verdict exact:
