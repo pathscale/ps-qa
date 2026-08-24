@@ -354,6 +354,19 @@ pub enum Command {
         require_outcomes: bool,
     },
 
+    /// Reconcile a saved `inventory` report against named outcome checks.
+    ///
+    /// This needs no running application. It lets an agent continue filling
+    /// coverage from a CI artifact instead of launching another GUI merely to
+    /// ask which controls remain unverified.
+    Reconcile {
+        /// TOON report previously emitted by `ps-qa inventory`.
+        inventory: PathBuf,
+        /// Where the checks live. Defaults to `tests/ps-qa`.
+        #[arg(long)]
+        checks: Option<PathBuf>,
+    },
+
     /// Drive every control named by the checks and judge what the renderer did
     /// with it. Exits 1 on any failure.
     Qa {
