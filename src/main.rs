@@ -2806,7 +2806,8 @@ async fn reveal_deferred_content(
     surface: &reach::Surface,
     want: &str,
 ) -> Result<usize> {
-    let materialized = materialize_deferred_content(client, surface).await?;
+    let materialized = materialize_deferred_content(client, surface).await?
+        + materialize_paginated_content(client, surface).await?;
     if materialized > 0 {
         let (snapshot, _) = inspect(client).await?;
         if painted_named(&snapshot.nodes, want) {
