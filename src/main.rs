@@ -1589,10 +1589,12 @@ async fn run_qa(
 
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
-        let mut click_error = None;
+        let mut action_error = open_error;
         let mut action_target = None;
         let mut action_node_id = None;
-        if let Some(want) = check.click.as_deref() {
+        if action_error.is_none()
+            && let Some(want) = check.click.as_deref()
+        {
             if check.expect == qa::Expect::TargetPaints && !check.press {
                 let (tree, _) = inspect(client).await?;
                 let wanted = want.to_lowercase();
@@ -1613,7 +1615,7 @@ async fn run_qa(
                 Ok(node_id) => action_node_id = node_id,
                 Err(error) => {
                     let how = if check.press { "press" } else { "click" };
-                    click_error = Some(format!("could not {how} {want:?}: {error}"));
+                    action_error = Some(format!("could not {how} {want:?}: {error}"));
                 }
             }
             // The exact declared outcome below polls the renderer. A generic
@@ -1621,21 +1623,21 @@ async fn run_qa(
             // unrelated background updates.
         }
 
-        if click_error.is_none()
+        if action_error.is_none()
             && let Some(text) = check.text.as_deref()
         {
             if let Some(field) = check.type_into.as_deref() {
                 match type_text(client, field, text).await {
                     Ok(node_id) => action_node_id = Some(node_id),
                     Err(error) => {
-                        click_error = Some(format!("could not type into {field:?}: {error}"));
+                        action_error = Some(format!("could not type into {field:?}: {error}"));
                     }
                 }
             } else {
-                click_error = Some("text requires type_into".to_owned());
+                action_error = Some("text requires type_into".to_owned());
             }
         }
-        if click_error.is_none()
+        if action_error.is_none()
             && let Some(key) = check.key.as_deref()
         {
             let target = check
@@ -1644,10 +1646,9 @@ async fn run_qa(
                 .or(check.type_into.as_deref())
                 .unwrap_or("");
             if let Err(error) = press_key(client, key, 1, target, check.key_on.is_some()).await {
-                click_error = Some(format!("could not send {key:?}: {error}"));
+                action_error = Some(format!("could not send {key:?}: {error}"));
             }
         }
-        let action_error = open_error.or(click_error);
         let transport_timed_out = action_error
             .as_deref()
             .is_some_and(|error| error.contains("inspector did not answer within"));
@@ -2904,8 +2905,12 @@ async fn materialize_paginated_content(
             .await?;
 
         // A pager keeps its semantic identity while only its remaining count
-        // changes. Reuse that id until the final activation removes it instead
-        // of serializing the entire tree after every five-row page.
+        // changes. The protocol deliberately treats activation as a delivered
+        // input even after the DOM node has gone away, so an error is not a
+        // disappearance signal. Read the semantic tree after each activation
+        // and stop as soon as this exact id is no longer an enabled, painted
+        // pager. Without that check a one-page Home button is clicked 128 times
+        // as a no-op and turns a two-second inventory into a multi-minute run.
         let mut removed = false;
         for _ in 0..128 {
             if click_by_id(client, node_id).await.is_err() {
@@ -2914,6 +2919,22 @@ async fn materialize_paginated_content(
             }
             revealed += 1;
             tokio::time::sleep(Duration::from_millis(5)).await;
+            let (after, _) = inspect(client).await?;
+            let still_present = after.nodes.iter().any(|node| {
+                node.id == node_id
+                    && node.role == "button"
+                    && node.enabled
+                    && node
+                        .bounds
+                        .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+                    && patterns
+                        .iter()
+                        .any(|pattern| name_matches(&node.name, pattern))
+            });
+            if !still_present {
+                removed = true;
+                break;
+            }
         }
         if !removed {
             bail!("pagination node {node_id} did not disappear after 128 activations");
