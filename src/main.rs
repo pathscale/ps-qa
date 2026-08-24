@@ -2702,6 +2702,157 @@ fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct SavedControl {
+    surface: String,
+    role: String,
+    name: String,
+    classification: String,
+}
+
+/// Parse one row from the TOON table emitted by `inventory`.
+///
+/// TOON quotes fields containing commas. This parser needs only the first five
+/// scalar columns and deliberately ignores any later columns added by a newer
+/// harness, so an old CI artifact remains useful after the report grows.
+fn saved_control_row(line: &str) -> Option<SavedControl> {
+    let line = line.strip_prefix("  ")?;
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in line.chars() {
+        if escaped {
+            field.push(character);
+            escaped = false;
+        } else if quoted && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if character == ',' && !quoted {
+            fields.push(std::mem::take(&mut field));
+        } else {
+            field.push(character);
+        }
+    }
+    fields.push(field);
+    (fields.len() >= 5).then(|| SavedControl {
+        surface: fields[0].trim().to_owned(),
+        role: fields[2].trim().to_owned(),
+        name: fields[3].trim().to_owned(),
+        classification: fields[4].trim().to_owned(),
+    })
+}
+
+fn saved_controls(report: &str) -> Result<Vec<SavedControl>, String> {
+    let mut in_controls = false;
+    let mut controls = Vec::new();
+    for line in report.lines() {
+        if line.starts_with("controls[") {
+            in_controls = true;
+            continue;
+        }
+        if in_controls && let Some(control) = saved_control_row(line) {
+            controls.push(control);
+        }
+    }
+    if !in_controls {
+        return Err("inventory report has no controls table".into());
+    }
+    Ok(controls)
+}
+
+fn reconcile_inventory(
+    inventory: &std::path::Path,
+    checks_dir: Option<&std::path::Path>,
+) -> Result<usize> {
+    #[derive(serde::Serialize)]
+    struct MissingRow {
+        surface: String,
+        role: String,
+        name: String,
+        classification: String,
+        checks: Vec<String>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct ReconcileReport {
+        components: usize,
+        outcome_declared: usize,
+        excluded_manual: usize,
+        failed_existing: usize,
+        unverified: usize,
+        controls: Vec<MissingRow>,
+    }
+
+    let input = std::fs::read_to_string(inventory)?;
+    let controls = saved_controls(&input).map_err(eyre::Report::msg)?;
+    let checks = qa::checks(checks_dir).map_err(eyre::Report::msg)?;
+    let mut outcome_declared = 0;
+    let mut excluded_manual = 0;
+    let mut failed_existing = 0;
+    let mut missing = Vec::new();
+
+    for control in &controls {
+        let node = SemanticNode {
+            id: 0,
+            parent: None,
+            role: control.role.clone(),
+            name: control.name.clone(),
+            value: None,
+            enabled: !control.classification.contains("disabled"),
+            visible: !control.classification.contains("unreachable"),
+            selected: false,
+            bounds: Some([0.0, 0.0, 1.0, 1.0]),
+        };
+        let matched = outcome_check_ids(&node, &checks);
+        if control.classification == "excluded-manual" {
+            excluded_manual += 1;
+        } else if control.classification.starts_with("failed-") {
+            failed_existing += 1;
+            missing.push(MissingRow {
+                surface: control.surface.clone(),
+                role: control.role.clone(),
+                name: control.name.clone(),
+                classification: control.classification.clone(),
+                checks: matched,
+            });
+        } else if control.classification.contains("isolated") || matched.is_empty() {
+            missing.push(MissingRow {
+                surface: control.surface.clone(),
+                role: control.role.clone(),
+                name: control.name.clone(),
+                classification: if control.classification.contains("isolated") {
+                    "isolated-unverified".into()
+                } else {
+                    "outcome-unverified".into()
+                },
+                checks: matched,
+            });
+        } else {
+            outcome_declared += 1;
+        }
+    }
+
+    let unverified = missing
+        .iter()
+        .filter(|row| !row.classification.starts_with("failed-"))
+        .count();
+    let report = ReconcileReport {
+        components: controls.len(),
+        outcome_declared,
+        excluded_manual,
+        failed_existing,
+        unverified,
+        controls: missing,
+    };
+    println!(
+        "{}",
+        toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
+    );
+    Ok(report.failed_existing + report.unverified)
+}
+
 async fn run_inventory(
     client: &mut Client,
     only: Option<&str>,
@@ -3682,6 +3833,13 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if let cli::Command::Reconcile { inventory, checks } = &cli.command {
+        let failures = reconcile_inventory(inventory, checks.as_deref())?;
+        if failures > 0 {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // Before attaching to anything: a run that drives an application against a
     // profile it does not have is worse than one that refuses to start, and
@@ -4208,7 +4366,9 @@ async fn main() -> Result<()> {
         }
         // No catch-all: the parser rejects an unknown command, with the list of
         // real ones, before any of this runs.
-        cli::Command::List { .. } => unreachable!("handled before the client connects"),
+        cli::Command::List { .. } | cli::Command::Reconcile { .. } => {
+            unreachable!("handled before the client connects")
+        }
     }
     Ok(())
 }
@@ -4216,7 +4376,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, inventory_class, name_matches, outcome_check_ids, selector_matches_node,
+        InventoryClass, inventory_class, name_matches, outcome_check_ids, saved_control_row,
+        saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4303,6 +4464,31 @@ mod tests {
             vec!["rename"]
         );
         assert!(outcome_check_ids(&component("Delete project", true, true), &checks).is_empty());
+    }
+
+    #[test]
+    fn saved_inventory_rows_keep_quoted_control_names_with_commas() {
+        let row = saved_control_row(
+            r#"  home,7,button,"Delete alpha, beta",reachable-unverified,no outcome check matched"#,
+        )
+        .expect("control row");
+        assert_eq!(row.surface, "home");
+        assert_eq!(row.role, "button");
+        assert_eq!(row.name, "Delete alpha, beta");
+        assert_eq!(row.classification, "reachable-unverified");
+    }
+
+    #[test]
+    fn a_saved_report_must_have_an_inventory_table() {
+        assert!(saved_controls("components: 3").is_err());
+        assert_eq!(
+            saved_controls(
+                "controls[1]{surface,id,role,name,classification,reason}:\n  home,7,button,Save,reachable-unverified,none"
+            )
+            .expect("controls")
+            .len(),
+            1
+        );
     }
 
     /// A bare word is a substring, because that is how a control is recalled.
