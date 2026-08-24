@@ -2925,7 +2925,7 @@ fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
 struct SavedControl {
     surface: String,
     role: String,
@@ -2933,56 +2933,15 @@ struct SavedControl {
     classification: String,
 }
 
-/// Parse one row from the TOON table emitted by `inventory`.
-///
-/// TOON quotes fields containing commas. This parser needs only the first five
-/// scalar columns and deliberately ignores any later columns added by a newer
-/// harness, so an old CI artifact remains useful after the report grows.
-fn saved_control_row(line: &str) -> Option<SavedControl> {
-    let line = line.strip_prefix("  ")?;
-    let mut fields = Vec::new();
-    let mut field = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for character in line.chars() {
-        if escaped {
-            field.push(character);
-            escaped = false;
-        } else if quoted && character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == ',' && !quoted {
-            fields.push(std::mem::take(&mut field));
-        } else {
-            field.push(character);
-        }
-    }
-    fields.push(field);
-    (fields.len() >= 5).then(|| SavedControl {
-        surface: fields[0].trim().to_owned(),
-        role: fields[2].trim().to_owned(),
-        name: fields[3].trim().to_owned(),
-        classification: fields[4].trim().to_owned(),
-    })
+#[derive(serde::Deserialize)]
+struct SavedInventory {
+    controls: Vec<SavedControl>,
 }
 
 fn saved_controls(report: &str) -> Result<Vec<SavedControl>, String> {
-    let mut in_controls = false;
-    let mut controls = Vec::new();
-    for line in report.lines() {
-        if line.starts_with("controls[") {
-            in_controls = true;
-            continue;
-        }
-        if in_controls && let Some(control) = saved_control_row(line) {
-            controls.push(control);
-        }
-    }
-    if !in_controls {
-        return Err("inventory report has no controls table".into());
-    }
-    Ok(controls)
+    toon_format::decode_default::<SavedInventory>(report)
+        .map(|inventory| inventory.controls)
+        .map_err(|error| format!("inventory report is not valid TOON: {error}"))
 }
 
 fn reconcile_inventory(
@@ -4619,7 +4578,7 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         InventoryClass, inventory_class, name_matches, outcome_check_ids, outcome_verdict,
-        painted_named, saved_control_row, saved_controls, selector_matches_node,
+        painted_named, saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4760,10 +4719,12 @@ mod tests {
 
     #[test]
     fn saved_inventory_rows_keep_quoted_control_names_with_commas() {
-        let row = saved_control_row(
-            r#"  home,7,button,"Delete alpha, beta",reachable-unverified,no outcome check matched"#,
+        let rows = saved_controls(
+            "controls[1]{surface,id,role,name,classification,reason}:\n  \
+             home,7,button,\"Delete alpha, beta\",reachable-unverified,none",
         )
-        .expect("control row");
+        .expect("controls");
+        let row = &rows[0];
         assert_eq!(row.surface, "home");
         assert_eq!(row.role, "button");
         assert_eq!(row.name, "Delete alpha, beta");
@@ -4781,6 +4742,22 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn nested_inventory_rows_round_trip_through_the_toon_decoder() {
+        let rows = saved_controls(
+            "components: 1\ncontrols[1]:\n  - surface: settings\n    id: 7\n    \
+             role: switch\n    name: Enable inspection\n    \
+             classification: \"isolated-unverified\"\n    reason: separate process\n    \
+             checks[0]:",
+        )
+        .expect("nested controls");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].surface, "settings");
+        assert_eq!(rows[0].role, "switch");
+        assert_eq!(rows[0].name, "Enable inspection");
+        assert_eq!(rows[0].classification, "isolated-unverified");
     }
 
     /// A bare word is a substring, because that is how a control is recalled.
