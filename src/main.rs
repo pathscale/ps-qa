@@ -1619,6 +1619,12 @@ async fn run_qa(
                 action_node_id,
             ),
         };
+        if cli::trace() {
+            match &outcome {
+                Ok(()) => println!("        verdict pass: {}", check.id),
+                Err(error) => println!("        verdict fail: {}: {error}", check.id),
+            }
+        }
         results.push((check, outcome));
     }
 
