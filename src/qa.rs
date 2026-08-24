@@ -181,6 +181,14 @@ pub struct Check {
     /// "no visible, enabled, sized button" when the check never got there,
     /// which reads as a missing control rather than a missing navigation.
     pub open: Option<String>,
+    /// Activate this semantic control after navigation and before measuring
+    /// the action baseline.
+    ///
+    /// This gives a check an explicit state precondition without making it
+    /// depend on a preceding check. For example, select one tab here, then
+    /// activate another and require its selected state to change.
+    #[serde(default)]
+    pub prepare: Option<String>,
     /// Hover this node first, if the control is revealed on hover.
     pub hover: Option<String>,
     /// Click this node, if the check is about an action.
@@ -670,6 +678,9 @@ fn action_description(check: &Check) -> String {
         (None, Some(c), false) => format!("activate {c:?}"),
         (None, None, _) => "observe only".to_owned(),
     };
+    if let Some(prepare) = check.prepare.as_deref() {
+        action = format!("prepare {prepare:?}, {action}");
+    }
     if let Some(field) = check.type_into.as_deref() {
         let typed = check.text.as_deref().map_or_else(
             || format!("focus {field:?}"),
@@ -725,6 +736,16 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_prepare_a_semantic_state_before_the_measured_action() {
+        let check = parse("prepare:Some(\"Draft\"),");
+        assert_eq!(check.prepare.as_deref(), Some("Draft"));
+        assert_eq!(
+            action_description(&check),
+            "prepare \"Draft\", activate \"Save\""
+        );
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -749,6 +770,7 @@ mod tests {
             group: "settings".into(),
             what: "the slider moves".into(),
             open: None,
+            prepare: None,
             hover: None,
             click: None,
             type_into: None,
