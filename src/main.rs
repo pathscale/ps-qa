@@ -1563,7 +1563,7 @@ async fn run_qa(
              * being driven is how a working control reads as broken, so this
              * is the slow case for everything.
              */
-            settle(client, Some(&check.subject)).await?;
+            settle(client, None).await?;
         }
 
         if click_error.is_none()
@@ -1593,29 +1593,31 @@ async fn run_qa(
             }
         }
         if check.text.is_some() || check.key.is_some() {
-            settle(client, Some(&check.subject)).await?;
+            settle(client, None).await?;
         }
 
-        let (after, _) = inspect(client).await?;
-        let outcome = match open_error.or(click_error) {
+        let action_error = open_error.or(click_error);
+        let after = if action_error.is_none() {
+            settle_for_outcome(
+                client,
+                check,
+                &before.nodes,
+                action_target.as_deref(),
+                action_node_id,
+            )
+            .await?
+        } else {
+            inspect(client).await?.0
+        };
+        let outcome = match action_error {
             Some(error) => Err(error),
-            None if check.expect == qa::Expect::TargetPaints => {
-                let Some(subject) = action_target else {
-                    results.push((
-                        check,
-                        Err("could not resolve the exact click target".to_owned()),
-                    ));
-                    continue;
-                };
-                let mut targeted = (*check).clone();
-                targeted.subject = subject;
-                targeted.expect = qa::Expect::Paints;
-                qa::verdict(&targeted, &before.nodes, &after.nodes)
-            }
-            None if check.expect == qa::Expect::ValueChanges && action_node_id.is_some() => {
-                qa::value_changed(action_node_id.unwrap(), &before.nodes, &after.nodes)
-            }
-            None => qa::verdict(check, &before.nodes, &after.nodes),
+            None => outcome_verdict(
+                check,
+                &before.nodes,
+                &after.nodes,
+                action_target.as_deref(),
+                action_node_id,
+            ),
         };
         results.push((check, outcome));
     }
@@ -1669,6 +1671,58 @@ async fn run_qa(
         toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
     );
     Ok(failed)
+}
+
+fn outcome_verdict(
+    check: &qa::Check,
+    before: &[SemanticNode],
+    after: &[SemanticNode],
+    action_target: Option<&str>,
+    action_node_id: Option<u64>,
+) -> std::result::Result<(), String> {
+    if check.expect == qa::Expect::TargetPaints {
+        let Some(subject) = action_target else {
+            return Err("could not resolve the exact click target".to_owned());
+        };
+        let mut targeted = check.clone();
+        targeted.subject = subject.to_owned();
+        targeted.expect = qa::Expect::Paints;
+        qa::verdict(&targeted, before, after)
+    } else if check.expect == qa::Expect::ValueChanges
+        && let Some(node_id) = action_node_id
+    {
+        qa::value_changed(node_id, before, after)
+    } else {
+        qa::verdict(check, before, after)
+    }
+}
+
+/// Wait for the declared result, not merely for a tree that already contains
+/// the subject.
+///
+/// A refresh indicator exists both before and after its button is activated.
+/// Waiting for that node to paint therefore returned immediately, even when
+/// its backend read was still running. Provider discovery can legitimately
+/// take seven seconds on a clean macOS runner, so keep sampling the exact
+/// verdict for ten seconds and return the last snapshot for a precise failure.
+async fn settle_for_outcome(
+    client: &mut Client,
+    check: &qa::Check,
+    before: &[SemanticNode],
+    action_target: Option<&str>,
+    action_node_id: Option<u64>,
+) -> Result<AgentSnapshot> {
+    const OUTCOME_TIMEOUT: Duration = Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + OUTCOME_TIMEOUT;
+    loop {
+        let (after, _) = inspect(client).await?;
+        if outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok()
+            || tokio::time::Instant::now() >= deadline
+        {
+            return Ok(after);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Resolve an application-owned opener to the surface it promises to show.
@@ -4548,8 +4602,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, inventory_class, name_matches, outcome_check_ids, painted_named,
-        saved_control_row, saved_controls, selector_matches_node,
+        InventoryClass, inventory_class, name_matches, outcome_check_ids, outcome_verdict,
+        painted_named, saved_control_row, saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4658,6 +4712,24 @@ mod tests {
             vec!["rename"]
         );
         assert!(outcome_check_ids(&component("Delete project", true, true), &checks).is_empty());
+    }
+
+    #[test]
+    fn outcome_waiting_rejects_an_unchanged_refresh_indicator() {
+        let mut check = check("refresh", Some("Refresh"), "Refresh generation");
+        check.expect = Expect::NameChanges;
+        let before = component("Refresh generation 1", true, true);
+        let after = before.clone();
+        assert!(outcome_verdict(&check, &[before], &[after], None, None).is_err());
+    }
+
+    #[test]
+    fn outcome_waiting_accepts_the_completed_refresh_indicator() {
+        let mut check = check("refresh", Some("Refresh"), "Refresh generation");
+        check.expect = Expect::NameChanges;
+        let before = component("Refresh generation 1", true, true);
+        let after = component("Refresh generation 2", true, true);
+        assert!(outcome_verdict(&check, &[before], &[after], None, None).is_ok());
     }
 
     #[test]
