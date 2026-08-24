@@ -2094,10 +2094,11 @@ async fn locate_control(
                 roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
             })
             .filter(|n| selector_matches_node(n, want))
-            // Geometry is authoritative here. Some renderer-backed controls
-            // report `visible=false` while retaining a real painted box; the
-            // QA verdict uses the same rule. Truly hidden retained nodes are
-            // still rejected below because their box is 0x0.
+            // An action must satisfy the inspector's own interactability gate.
+            // Retained panes can keep a non-zero stale box while reporting the
+            // node hidden; choosing that copy reaches `notInteractable` even
+            // when a visible replacement exists on the active surface.
+            .filter(|node| node.visible)
             .filter_map(|node| {
                 node.bounds
                     .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
