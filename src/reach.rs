@@ -430,51 +430,16 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
     best
 }
 
-/// Whether pressing this hands control to the operating system.
+/// Whether the application reserves this control for its manual release pass.
 ///
-/// A native file chooser is not part of the webview: it is a modal the harness
-/// cannot see in the semantic tree, cannot dismiss with a click, and which
-/// takes the user's screen until a person closes it. A sweep that presses one
-/// stops being unattended, and a user reported exactly that - "the open file
-/// dialog is stuck open on the GUI" - mid-run.
-///
-/// These are skipped rather than judged, and counted in their own bucket so the
-/// report never implies they passed.
+/// The profile owns the exact prefixes and records why each one is manual. The
+/// common cases are a native chooser the semantic tree cannot dismiss, an
+/// external destination, a process-ending action that would prevent cleanup,
+/// or an authenticated paid-provider action CI cannot honestly exercise.
+/// Ordinary in-app dialogs are not exempt: the sweep opens and closes them.
+/// Every exception is counted and printed, so manual never means silently
+/// treated as passing.
 pub fn requires_manual_release_check(name: &str) -> bool {
-    /*
-     * Only the controls that hand the screen to macOS.
-     *
-     * This list used to carry "Choose", "Browse" and "Open folder" as well,
-     * which is how it grew from "skip the OS file chooser" into a general
-     * posture of not opening things. That posture is what let one dialog
-     * ship with a dead Cancel: the sweep never opened an in-app modal, so it
-     * never asked whether it could get back out, and a user found a trap the
-     * harness had reported as a clean run.
-     *
-     * An in-app dialog is a surface like any other and gets swept. Only a
-     * native chooser is exempt, because it is not in the webview at all: the
-     * tree cannot see it, no click can dismiss it, and it takes the user's
-     * screen until a person closes it.
-     */
-    /*
-     * The only exception, and it is documented rather than silent.
-     *
-     * Everything else is pressed, including in-app modals: the old list had
-     * grown into a general posture of not opening things, which is how a fork
-     * dialog shipped with a Cancel that does nothing - no run ever opened it.
-     *
-     * A macOS file chooser is genuinely outside what this harness can drive.
-     * It is not in the webview, so the semantic tree cannot see it and no
-     * synthesised click can reach it; Escape through the control protocol goes
-     * to the window underneath, and driving it through System Events needs
-     * assistive access this process does not have. Pressing one leaves a panel
-     * on the user's screen until a person closes it, which happened twice
-     * during this audit.
-     *
-     * These are counted in the `native` bucket and printed, so the report says
-     * how many controls were not exercised and why. They need a person:
-     * `scripts/button-sweep.sh` documents the manual pass.
-     */
     profile()
         .manual_controls
         .iter()
@@ -956,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_documented_file_panels_are_exempt() {
+    fn only_application_documented_controls_are_exempt() {
         /*
          * The exemption is exactly the controls the application named, matched
          * by prefix, and every entry says what it raises.
