@@ -1361,10 +1361,35 @@ async fn run_qa(
     let all = qa::checks(checks_dir).map_err(|error| eyre!(error))?;
     // A group *or* one check's id, so chasing a single failure does not mean
     // re-running its neighbours against the real app every time.
-    let selected: Vec<&qa::Check> = all
+    // Stable surface buckets: keep dependent checks in manifest order while
+    // avoiding repeated remounts of the same large application pane. The
+    // application profile owns the surface openers; an unknown plain opener is
+    // the configured dynamic document, while role-qualified openers stay in
+    // the current bucket because they open a dialog within that surface.
+    let surfaces = reach::surfaces();
+    let dynamic = surfaces
         .iter()
-        .filter(|check| group.is_none_or(|want| check.group == want || check.id == want))
-        .collect();
+        .position(|surface| surface.opener == reach::DYNAMIC_DOCUMENT)
+        .unwrap_or(0);
+    let mut affinity = dynamic;
+    let mut selected: Vec<(usize, &qa::Check)> = Vec::new();
+    for check in &all {
+        if let Some(opener) = check.open.as_deref() {
+            if let Some(index) = surfaces
+                .iter()
+                .position(|surface| surface.opener.eq_ignore_ascii_case(opener))
+            {
+                affinity = index;
+            } else if !opener.contains(':') {
+                affinity = dynamic;
+            }
+        }
+        if group.is_none_or(|want| check.group == want || check.id == want) {
+            selected.push((affinity, check));
+        }
+    }
+    selected.sort_by_key(|(surface, _)| *surface);
+    let selected: Vec<&qa::Check> = selected.into_iter().map(|(_, check)| check).collect();
     if selected.is_empty() {
         let mut names: Vec<String> = all
             .iter()
@@ -1380,7 +1405,10 @@ async fn run_qa(
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
 
     for check in selected {
-        let check_started = Instant::now();
+        // Navigation and disclosure materialization are suite setup. Give them
+        // a bounded but realistic budget; the measured control action below
+        // switches the transport to the sub-second contract.
+        client.set_request_timeout(Duration::from_secs(15));
         /*
          * Navigate first, and snapshot *after*, or the baseline is the wrong
          * surface entirely and every count is measured against a screen the
@@ -1525,6 +1553,8 @@ async fn run_qa(
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
+        client.set_request_timeout(Duration::from_millis(900));
+        let check_started = Instant::now();
         let (before, _) = inspect(client).await?;
 
         // Hover first: the row actions do not exist until `pointerenter`.
@@ -4501,7 +4531,6 @@ async fn main() -> Result<()> {
             checks,
             max_seconds,
         } => {
-            client.set_request_timeout(Duration::from_millis(900));
             let result = tokio::time::timeout(
                 Duration::from_secs(max_seconds),
                 run_cover(
@@ -4528,7 +4557,6 @@ async fn main() -> Result<()> {
             }
         }
         cli::Command::Qa { selector, checks } => {
-            client.set_request_timeout(Duration::from_millis(900));
             let failed = run_qa(&mut client, selector.as_deref(), checks.as_deref()).await?;
             if failed > 0 {
                 std::process::exit(1);
