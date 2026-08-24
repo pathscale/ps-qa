@@ -1399,10 +1399,12 @@ async fn run_qa(
              * whether the surface is in front.
              */
             let want_here: &str = check.click.as_deref().unwrap_or(&check.subject);
+            let destination = surface_for_opener(want);
             let (here, _) = inspect(client).await?;
-            let arrived = here.nodes.iter().any(|n| {
-                n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
-            });
+            let arrived = destination.map_or_else(
+                || painted_named(&here.nodes, want_here),
+                |surface| reach::on_surface(&here.nodes, surface),
+            );
             if !arrived {
                 /*
                  * Two steps, because the opener may not be on this surface.
@@ -1425,9 +1427,10 @@ async fn run_qa(
                 let _ = click_named_quiet(client, want).await;
                 settle(client, None).await?;
                 let (now, _) = inspect(client).await?;
-                let there = now.nodes.iter().any(|n| {
-                    n.name.contains(want_here) && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
-                });
+                let there = destination.map_or_else(
+                    || painted_named(&now.nodes, want_here),
+                    |surface| reach::on_surface(&now.nodes, surface),
+                );
                 if !there && open_named(client, want).await.is_err() {
                     if let Some(home) = reach::profile().home_opener.as_deref() {
                         let _ = click_named_quiet(client, home).await;
@@ -1643,6 +1646,21 @@ async fn run_qa(
         toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
     );
     Ok(failed)
+}
+
+/// Resolve an application-owned opener to the surface it promises to show.
+///
+/// Document names are fixture data, so they match the profile's dynamic
+/// document surface after literal permanent-surface openers are considered.
+fn surface_for_opener(want: &str) -> Option<&'static reach::Surface> {
+    reach::surfaces()
+        .iter()
+        .find(|surface| surface.opener == want)
+        .or_else(|| {
+            reach::surfaces()
+                .iter()
+                .find(|surface| surface.opener == reach::DYNAMIC_DOCUMENT)
+        })
 }
 
 /// Whether a named check target currently occupies a box in the live tree.
