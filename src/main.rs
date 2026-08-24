@@ -1555,7 +1555,6 @@ async fn run_qa(
 
         client.set_request_timeout(Duration::from_millis(900));
         let check_started = Instant::now();
-        let (before, _) = inspect(client).await?;
 
         // Hover first: the row actions do not exist until `pointerenter`.
         //
@@ -1586,6 +1585,11 @@ async fn run_qa(
                 .await?;
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+
+        // Hover can mount the action that the check will drive. Capture the
+        // baseline afterward: inspecting before hover both omitted that real
+        // pre-action state and paid for an immediately discarded snapshot.
+        let (before, _) = inspect(client).await?;
 
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
