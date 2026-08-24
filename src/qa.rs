@@ -596,9 +596,10 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
         ));
     }
     out.push_str(&format!("\n{} checks in {} groups\n", all.len(), {
-        let mut groups: Vec<&str> = all.iter().map(|c| c.group.as_str()).collect();
-        groups.dedup();
-        groups.len()
+        all.iter()
+            .map(|check| check.group.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
     }));
     Ok(out)
 }
