@@ -98,9 +98,10 @@ use semantic activation by default: resolve a name with `find`, retain the node
 id, and act on that id. When repeated rows intentionally share an accessible
 name, `click --id` selects the intended row without coordinates.
 
-`inventory` navigates, expands and hovers configured surfaces with semantic
-node-id actions, then emits every interactive component (buttons, links,
-fields, menus, switches, sliders, tabs, and ARIA equivalents) with its surface,
+`inventory` navigates, expands, materializes profile-declared deferred rows,
+and hovers configured surfaces with semantic node-id actions, then emits every
+interactive component (buttons, links, fields, menus, switches, sliders, tabs,
+and ARIA equivalents) with its surface,
 role, node id, exact accessible name, and classification. Reachable controls
 remain `reachable-unverified` until an outcome check proves them. Native-dialog
 and external-link exceptions are `excluded-manual`; unreachable or anonymous
@@ -138,7 +139,7 @@ tabs, then activates the exact semantic node id.
 
 | Expectation | Passes when |
 | --- | --- |
-| `Paints` | the subject exists, is visible, and has a **non-zero box** |
+| `Paints` | the subject exists and has a **non-zero rendered box** |
 | `Enabled` | a painted subject accepts input after the action |
 | `Disabled` | a painted subject refuses input after the action |
 | `Vanishes` | nothing matching is on screen (it may remain in the tree) |
@@ -153,7 +154,7 @@ tabs, then activates the exact semantic node id.
 
 Outcome checks can continue past activation with literal semantic input:
 `type_into: Some("New item"), text: Some("qa audit newest"), key: Some("Enter")`.
-Text is focused and entered by node id; no coordinate pointer is involved.
+Text is focused, selected, and exactly replaced by node id; no coordinate pointer is involved.
 When the expectation is `ValueChanges`, ps-qa carries that exact text-field
 node id through `SetValue` and compares its semantic value before and after.
 This prevents a neighbouring same-name editor from satisfying the check.
@@ -214,6 +215,7 @@ supply that, and both belong to the application under test:
 
 **`ps-qa.ron`** — what the harness cannot infer. The surfaces to sweep and the
 control that opens each, the permanent tabs, the collapsible section headers,
+an optional per-surface `reveal_with` search field for lazily mounted rows,
 the prefixes of controls that close or fold something, the region a transcript
 scrolls inside, the exact native/external controls reserved for a manual pass,
 controls to defer until a surface is otherwise covered, session-ending controls
