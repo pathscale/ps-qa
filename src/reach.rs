@@ -199,7 +199,6 @@ pub fn interactive(node: &SemanticNode) -> bool {
             | "menuitem"
             | "menuitemcheckbox"
             | "menuitemradio"
-            | "option"
             | "radio"
             | "slider"
             | "spinbutton"
@@ -873,6 +872,16 @@ mod tests {
             2,
             "heading",
             "Not interactive",
+            Some([0.0, 0.0, 20.0, 20.0])
+        )));
+        // A native option is a value operated through its combobox. When that
+        // combobox is closed the renderer retains every option as a hidden
+        // semantic node; counting those as independently reachable controls
+        // reports a working native selector as a row of broken widgets.
+        assert!(!interactive(&node(
+            3,
+            "option",
+            "Choice",
             Some([0.0, 0.0, 20.0, 20.0])
         )));
     }
