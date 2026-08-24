@@ -1441,6 +1441,35 @@ async fn run_qa(
             settle(client, None).await?;
         }
 
+        /*
+         * A check must be independent of whichever disclosure a previous
+         * check left closed. The application profile already identifies its
+         * collapsible sections for inventory and coverage; use that same
+         * app-owned information when the check's action target is not exposed.
+         *
+         * Only expand when the target is missing. This preserves intentional
+         * collapse/expand round trips: an `Expand …` action remains available
+         * after the preceding check closed its section and is not pre-empted.
+         */
+        let action_target = check
+            .click
+            .as_deref()
+            .or(check.type_into.as_deref())
+            .or(check.key_on.as_deref())
+            .unwrap_or(&check.subject);
+        let (current, _) = inspect(client).await?;
+        if !painted_named(&current.nodes, action_target)
+            && let Some(surface) = reach::surfaces()
+                .iter()
+                .find(|surface| reach::on_surface(&current.nodes, surface))
+        {
+            let opened = expand_everything(client, surface).await?;
+            if cli::trace() && opened > 0 {
+                println!("        opened {opened} collapsed section(s) for {action_target:?}");
+            }
+            settle(client, None).await?;
+        }
+
         let (before, _) = inspect(client).await?;
 
         // Hover first: the row actions do not exist until `pointerenter`.
@@ -1614,6 +1643,22 @@ async fn run_qa(
         toon_format::encode_default(&report).map_err(|e| eyre!(e.to_string()))?
     );
     Ok(failed)
+}
+
+/// Whether a named check target currently occupies a box in the live tree.
+///
+/// `role:name` is accepted for precise subjects such as rename textboxes; bare
+/// names retain the normal substring behavior used by application manifests.
+fn painted_named(nodes: &[SemanticNode], want: &str) -> bool {
+    let (role, name) = want.split_once(':').unwrap_or(("", want));
+    nodes.iter().any(|node| {
+        (role.is_empty() || node.role == role)
+            && node.name.contains(name)
+            && node.visible
+            && node
+                .bounds
+                .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+    })
 }
 
 /// Click one node by id, with no name lookup in between.
@@ -4381,8 +4426,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, inventory_class, name_matches, outcome_check_ids, saved_control_row,
-        saved_controls, selector_matches_node,
+        InventoryClass, inventory_class, name_matches, outcome_check_ids, painted_named,
+        saved_control_row, saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4456,6 +4501,28 @@ mod tests {
         let mut textbox = button.clone();
         textbox.role = "textbox".into();
         assert!(selector_matches_node(&textbox, "textbox:Rename project"));
+    }
+
+    #[test]
+    fn check_preconditions_require_a_painted_matching_role() {
+        let button = component("Rename project", true, true);
+        assert!(painted_named(std::slice::from_ref(&button), "Rename"));
+        assert!(!painted_named(
+            std::slice::from_ref(&button),
+            "textbox:Rename project"
+        ));
+
+        let mut textbox = button;
+        textbox.role = "textbox".into();
+        assert!(painted_named(
+            std::slice::from_ref(&textbox),
+            "textbox:Rename project"
+        ));
+        textbox.bounds = Some([0.0, 0.0, 0.0, 0.0]);
+        assert!(!painted_named(
+            std::slice::from_ref(&textbox),
+            "textbox:Rename project"
+        ));
     }
 
     #[test]
