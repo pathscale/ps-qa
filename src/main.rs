@@ -2857,6 +2857,49 @@ async fn materialize_deferred_content(
     Ok(2)
 }
 
+/// Reveal every page the application explicitly identifies as pagination.
+///
+/// This is semantic node-id activation. Pager labels are application data, so
+/// the profile supplies fragments such as ` more records`; a generic `Show`
+/// heuristic would also activate unrelated disclosure controls.
+async fn materialize_paginated_content(
+    client: &mut Client,
+    surface: &reach::Surface,
+) -> Result<usize> {
+    let patterns = &reach::profile().pagination_controls;
+    if patterns.is_empty() {
+        return Ok(0);
+    }
+    for revealed in 0..128 {
+        let (tree, _) = inspect(client).await?;
+        let scope: HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
+            .into_iter()
+            .collect();
+        let target = tree.nodes.iter().find(|node| {
+            scope.contains(&node.id)
+                && node.role == "button"
+                && node.enabled
+                && node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+                && patterns
+                    .iter()
+                    .any(|pattern| name_matches(&node.name, pattern))
+        });
+        let Some(target) = target else {
+            return Ok(revealed);
+        };
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                node_id: target.id,
+            }))
+            .await?;
+        click_by_id(client, target.id).await?;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    bail!("pagination did not terminate after 128 semantic activations")
+}
+
 /// Hover every row on the surface, so hover-revealed controls enter the tree.
 ///
 /// The row controls users asked about - rename, delete, pin - do not exist
@@ -3218,6 +3261,7 @@ async fn run_inventory(
             continue;
         }
         materialize_deferred_content(client, surface).await?;
+        materialize_paginated_content(client, surface).await?;
         let rows_hovered = hover_all_rows(client).await?;
         let (tree, _) = inspect(client).await?;
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
@@ -3702,6 +3746,7 @@ async fn run_cover(
             continue;
         }
         materialize_deferred_content(client, surface).await?;
+        materialize_paginated_content(client, surface).await?;
         let hovered = hover_all_rows(client).await?;
 
         /*

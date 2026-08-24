@@ -31,6 +31,7 @@
 //!     sections: ["Records", "Activity"],
 //!     document_row_markers: [" open \u{b7} "],
 //!     document_openers: ["QA document"],
+//!     pagination_controls: [" more records"],
 //!     close_prefixes: ["Close "],
 //!     dismiss_controls: ["Leave dialog"],
 //!     row_action_prefixes: ["Rename "],
@@ -134,6 +135,12 @@ pub struct AppProfile {
     /// them lets an outcome suite recognize that it is already on the same
     /// document instead of returning Home and reopening it before every check.
     pub document_openers: Vec<String>,
+    /// Name fragments for controls that reveal another page of the same list.
+    ///
+    /// Inventory activates these until none remain before it counts component
+    /// instances. The application keeps ownership of the words, and the
+    /// harness never guesses from a generic verb such as `Show`.
+    pub pagination_controls: Vec<String>,
     /// Prefixes of controls that close a surface, e.g. `Close `.
     ///
     /// These retire the pane everything else stands on, so they are swept last.
@@ -324,6 +331,7 @@ mod tests {
             inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
             document_openers: vec!["QA document".to_owned()],
+            pagination_controls: vec![" more records".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],
             dismiss_controls: vec!["Leave dialog".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],
@@ -339,6 +347,7 @@ mod tests {
         assert_eq!(back.sections, vec!["Records".to_owned()]);
         assert_eq!(back.transcript_region.as_deref(), Some("Message history"));
         assert_eq!(back.document_openers, vec!["QA document".to_owned()]);
+        assert_eq!(back.pagination_controls, vec![" more records".to_owned()]);
         assert!(back.dismisses_dialog("leave dialog"));
     }
 }
