@@ -1692,6 +1692,10 @@ fn outcome_verdict(
         && let Some(node_id) = action_node_id
     {
         qa::value_changed(node_id, before, after)
+    } else if check.expect == qa::Expect::SelectionChanges
+        && let Some(node_id) = action_node_id
+    {
+        qa::selection_changed(node_id, before, after)
     } else {
         qa::verdict(check, before, after)
     }
