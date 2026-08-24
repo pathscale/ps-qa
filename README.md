@@ -279,3 +279,6 @@ Still application-shaped, and worth knowing before pointing this at something
 new: the sweep assumes a tab strip that doubles a tab's label in its accessible
 name, and `DYNAMIC_DOCUMENT` resolves "the first document tab" by that doubling. An
 application that names its tabs differently will need that rule widened.
+Outcome suites should also list deterministic fixture document names in
+`document_openers`; this lets repeated checks reuse the open document without
+guessing that an unrelated control such as `New document` is a document name.
