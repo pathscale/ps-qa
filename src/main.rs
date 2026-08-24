@@ -2882,13 +2882,23 @@ fn is_pagination_control(node: &SemanticNode, scope: &HashSet<u64>, patterns: &[
             .any(|pattern| name_matches(&node.name, pattern))
 }
 
+type SemanticShape = (String, String, Option<String>);
+
+fn semantic_shapes(nodes: &[SemanticNode], scope: &HashSet<u64>) -> HashSet<SemanticShape> {
+    nodes
+        .iter()
+        .filter(|node| scope.contains(&node.id))
+        .map(|node| (node.role.clone(), node.name.clone(), node.value.clone()))
+        .collect()
+}
+
 fn pagination_advanced(
-    previous_scope: &HashSet<u64>,
+    previous_shapes: &HashSet<SemanticShape>,
     previous_name: &str,
-    current_scope: &HashSet<u64>,
+    current_shapes: &HashSet<SemanticShape>,
     current: &SemanticNode,
 ) -> bool {
-    current.name != previous_name || current_scope.len() > previous_scope.len()
+    current.name != previous_name || current_shapes.len() > previous_shapes.len()
 }
 
 async fn materialize_paginated_content(
@@ -2914,7 +2924,7 @@ async fn materialize_paginated_content(
         };
         let node_id = target.id;
         let mut pager_name = target.name.clone();
-        let mut pager_scope = scope;
+        let mut pager_shapes = semantic_shapes(&tree.nodes, &scope);
         client
             .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
                 node_id,
@@ -2940,15 +2950,16 @@ async fn materialize_paginated_content(
             let after_scope: HashSet<u64> = reach::on_surface_subtree(&after.nodes, surface)
                 .into_iter()
                 .collect();
+            let after_shapes = semantic_shapes(&after.nodes, &after_scope);
             let still_present = after.nodes.iter().find(|node| {
                 node.id == node_id && is_pagination_control(node, &after_scope, patterns)
             });
             match still_present {
                 Some(current)
-                    if pagination_advanced(&pager_scope, &pager_name, &after_scope, current) =>
+                    if pagination_advanced(&pager_shapes, &pager_name, &after_shapes, current) =>
                 {
                     pager_name.clone_from(&current.name);
-                    pager_scope = after_scope;
+                    pager_shapes = after_shapes;
                 }
                 _ => {
                     // A reveal-more control must expose semantic progress.
@@ -4863,7 +4874,10 @@ mod tests {
 
     #[test]
     fn an_unchanged_pager_requires_real_tree_progress() {
-        let before = HashSet::from([1, 2]);
+        let before = HashSet::from([
+            ("button".to_owned(), "Show 5 more projects".to_owned(), None),
+            ("button".to_owned(), "Open project one".to_owned(), None),
+        ]);
         assert!(!pagination_advanced(
             &before,
             "Show 5 more projects",
@@ -4873,13 +4887,24 @@ mod tests {
         assert!(pagination_advanced(
             &before,
             "Show 5 more projects",
-            &HashSet::from([1, 2, 3]),
+            &HashSet::from([
+                ("button".to_owned(), "Show 5 more projects".to_owned(), None),
+                ("button".to_owned(), "Open project one".to_owned(), None),
+                ("button".to_owned(), "Open project two".to_owned(), None),
+            ]),
             &component("Show 5 more projects", true, true)
         ));
         assert!(!pagination_advanced(
             &before,
             "Show 5 more projects",
-            &HashSet::from([1, 3]),
+            &HashSet::from([
+                ("button".to_owned(), "Show 5 more projects".to_owned(), None),
+                (
+                    "button".to_owned(),
+                    "Open project replacement".to_owned(),
+                    None
+                ),
+            ]),
             &component("Show 5 more projects", true, true)
         ));
         assert!(pagination_advanced(
