@@ -3754,6 +3754,13 @@ async fn run_cover(
             } else if reach::requires_isolated_outcome(&node.name) {
                 here.isolated += 1;
                 skipped_isolated.push(node.name.clone());
+            } else if reach::requires_manual_release_check(&node.name) {
+                // Never pressed unattended: a native chooser takes the user's
+                // screen and cannot be dismissed from here.
+                here.manual += 1;
+                skipped_manual.push(node.name.clone());
+            } else if unmapped_only && !outcome_check_ids(node, &checks).is_empty() {
+                here.outcome_declared += 1;
             } else if reach::profile()
                 .fold_prefixes
                 .iter()
@@ -3791,13 +3798,6 @@ async fn run_cover(
                 // mid-plan navigates away and every later button on this
                 // surface reads as vanished.
                 here.navigation += 1;
-            } else if reach::requires_manual_release_check(&node.name) {
-                // Never pressed unattended: a native chooser takes the user's
-                // screen and cannot be dismissed from here.
-                here.manual += 1;
-                skipped_manual.push(node.name.clone());
-            } else if unmapped_only && !outcome_check_ids(node, &checks).is_empty() {
-                here.outcome_declared += 1;
             } else if reach::closes_a_surface(&node.name) {
                 /*
                  * Swept, but after everything that stands on the tab it
