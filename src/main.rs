@@ -1249,7 +1249,7 @@ async fn type_keys(client: &mut Client, count: usize, want: &str) -> Result<()> 
 }
 
 /// Set literal text on an exact semantic text-field node.
-async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<()> {
+async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<u64> {
     let (snapshot, _) = inspect(client).await?;
     let field = find_text_field(&snapshot.nodes, want)
         .ok_or_else(|| eyre!("no enabled, visible text field matching {want:?}"))?;
@@ -1266,7 +1266,7 @@ async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<()> {
         bail!("{} ({})", error.message, error.code);
     }
     tokio::time::sleep(Duration::from_millis(150)).await;
-    Ok(())
+    Ok(field.id)
 }
 
 /// Price a single click, such as switching to a tab.
@@ -1515,8 +1515,11 @@ async fn run_qa(
             && let Some(text) = check.text.as_deref()
         {
             if let Some(field) = check.type_into.as_deref() {
-                if let Err(error) = type_text(client, field, text).await {
-                    click_error = Some(format!("could not type into {field:?}: {error}"));
+                match type_text(client, field, text).await {
+                    Ok(node_id) => action_node_id = Some(node_id),
+                    Err(error) => {
+                        click_error = Some(format!("could not type into {field:?}: {error}"));
+                    }
                 }
             } else {
                 click_error = Some("text requires type_into".to_owned());
