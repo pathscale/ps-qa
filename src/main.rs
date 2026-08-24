@@ -1583,7 +1583,11 @@ async fn run_qa(
             client
                 .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
                 .await?;
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            if let Some(action) = check.click.as_deref() {
+                let _ = wait_for_arrival(client, None, action).await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
         }
 
         // Hover can mount the action that the check will drive. Capture the
