@@ -3030,8 +3030,10 @@ async fn hover_all_rows(client: &mut Client) -> Result<usize> {
             .await
             .is_ok()
         {
+            // The protocol reply is the synchronization point. Sleeping after
+            // every row adds no evidence and turns a large paginated table into
+            // minutes of idle time.
             revealed += 1;
-            tokio::time::sleep(Duration::from_millis(40)).await;
         }
     }
     Ok(revealed)
