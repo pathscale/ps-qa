@@ -1123,7 +1123,13 @@ fn find_text_field<'a>(nodes: &'a [SemanticNode], want: &str) -> Option<&'a Sema
 /// to the focused scroller, and without it every attempt to reach the rows the
 /// owner was looking at meant asking a person to scroll. A bug that only
 /// reproduces by hand is a bug that gets one measurement per message.
-async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) -> Result<()> {
+async fn press_key(
+    client: &mut Client,
+    name: &str,
+    count: usize,
+    over: &str,
+    require_target: bool,
+) -> Result<()> {
     // A key goes to the focused node, so click the container first. Clicking a
     // scroll container's own body focuses it without activating anything: the
     // transcript section carries `tabindex="0"` for exactly this.
@@ -1165,6 +1171,8 @@ async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) ->
             .await?;
         tokio::time::sleep(Duration::from_millis(150)).await;
         println!("focused node {target} for {name} x{count}");
+    } else if require_target {
+        bail!("no enabled, painted key target matching {over:?}");
     } else {
         println!("no visible node named {over:?}; sending {name} to whatever has focus");
     }
@@ -1588,7 +1596,7 @@ async fn run_qa(
                 .as_deref()
                 .or(check.type_into.as_deref())
                 .unwrap_or("");
-            if let Err(error) = press_key(client, key, 1, target).await {
+            if let Err(error) = press_key(client, key, 1, target, check.key_on.is_some()).await {
                 click_error = Some(format!("could not send {key:?}: {error}"));
             }
         }
@@ -3561,7 +3569,7 @@ async fn sweep_modal(
     }
 
     // Escape, which `AppModal` binds and which is the last thing a person has.
-    let _ = press_key(client, "escape", 1, "").await;
+    let _ = press_key(client, "escape", 1, "", false).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (after, _) = inspect(client).await?;
     if !reach::modal_open(&after.nodes) {
@@ -4517,7 +4525,7 @@ async fn main() -> Result<()> {
                 .clone()
                 .unwrap_or_default();
             let over = if over.is_empty() { &fallback } else { &over };
-            press_key(&mut client, &name, count as usize, over).await?;
+            press_key(&mut client, &name, count as usize, over, false).await?;
         }
         cli::Command::Type { count, name } => {
             nodes(&mut client).await?;
