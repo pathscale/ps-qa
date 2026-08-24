@@ -603,6 +603,9 @@ pub fn manifest(dir: Option<&std::path::Path>) -> Result<String, String> {
             "  {:<26} {}\n{:<29}{} -> {:?} {:?}\n",
             check.id, check.what, "", action, check.expect, check.subject
         ));
+        if !check.covers.is_empty() {
+            out.push_str(&format!("{:<29}covers {:?}\n", "", check.covers));
+        }
     }
     out.push_str(&format!("\n{} checks in {} groups\n", all.len(), {
         all.iter()
