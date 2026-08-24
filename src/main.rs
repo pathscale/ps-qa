@@ -2888,7 +2888,7 @@ fn pagination_advanced(
     current_scope: &HashSet<u64>,
     current: &SemanticNode,
 ) -> bool {
-    current.name != previous_name || current_scope.iter().any(|id| !previous_scope.contains(id))
+    current.name != previous_name || current_scope.len() > previous_scope.len()
 }
 
 async fn materialize_paginated_content(
@@ -4874,6 +4874,12 @@ mod tests {
             &before,
             "Show 5 more projects",
             &HashSet::from([1, 2, 3]),
+            &component("Show 5 more projects", true, true)
+        ));
+        assert!(!pagination_advanced(
+            &before,
+            "Show 5 more projects",
+            &HashSet::from([1, 3]),
             &component("Show 5 more projects", true, true)
         ));
         assert!(pagination_advanced(
