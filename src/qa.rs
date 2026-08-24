@@ -144,6 +144,12 @@ pub enum Expect {
     /// carried from the before snapshot so a repeated accessible name cannot
     /// satisfy the assertion with a neighbouring row.
     ValueChanges,
+    /// The exact semantic node's selected/pressed state changed.
+    ///
+    /// Radios and `aria-pressed` buttons expose selection as a boolean rather
+    /// than inventing a string value. This follows the activated node id, so a
+    /// neighbouring swatch cannot satisfy the verdict.
+    SelectionChanges,
     /// The exact subject node's accessible name changed after the action.
     ///
     /// Use this for status text that reports a completed refresh or re-check.
@@ -515,6 +521,15 @@ pub fn verdict(
                 })?;
             value_changed(before_node.id, before, after)?;
         }
+        Expect::SelectionChanges => {
+            let before_node = matching(before, &check.subject)
+                .into_iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| {
+                    format!("no painted node matching {:?} before action", check.subject)
+                })?;
+            selection_changed(before_node.id, before, after)?;
+        }
         Expect::NameChanges => {
             let before_node = matching(before, &check.subject)
                 .into_iter()
@@ -556,6 +571,29 @@ pub fn value_changed(
         .ok_or_else(|| format!("node {node_id} has no semantic value after action"))?;
     if old == new {
         return Err(format!("semantic value for node {node_id} stayed {old:?}"));
+    }
+    Ok(())
+}
+
+/// Assert that one exact semantic node changed selected/pressed state.
+pub fn selection_changed(
+    node_id: u64,
+    before: &[SemanticNode],
+    after: &[SemanticNode],
+) -> Result<(), String> {
+    let before_node = before
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} was absent before action"))?;
+    let after_node = after
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} disappeared after action"))?;
+    if before_node.selected == after_node.selected {
+        return Err(format!(
+            "selected state for node {node_id} stayed {}",
+            before_node.selected
+        ));
     }
     Ok(())
 }
@@ -660,7 +698,9 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, Expect, action_description, name_changed, value_changed, verdict};
+    use super::{
+        Check, Expect, action_description, name_changed, selection_changed, value_changed, verdict,
+    };
     use blitz_control_protocol::SemanticNode;
 
     fn parse(extra: &str) -> Check {
@@ -740,6 +780,39 @@ mod tests {
             )
             .is_err(),
             "the exact activated id cannot be replaced by a same-name neighbour"
+        );
+    }
+
+    #[test]
+    fn a_selection_check_follows_the_same_node_id() {
+        let before = SemanticNode {
+            id: 7,
+            parent: None,
+            role: "radio".into(),
+            name: "Theme colour".into(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 20.0, 20.0]),
+        };
+        let mut after = before.clone();
+        after.selected = true;
+        assert!(
+            selection_changed(
+                7,
+                std::slice::from_ref(&before),
+                std::slice::from_ref(&after),
+            )
+            .is_ok()
+        );
+        assert!(
+            selection_changed(
+                7,
+                std::slice::from_ref(&before),
+                std::slice::from_ref(&before),
+            )
+            .is_err()
         );
     }
 

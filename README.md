@@ -150,6 +150,7 @@ tabs, then activates the exact semantic node id.
 | `TargetPaints` | the exact accessible name selected for the click still paints |
 | `Above` | the subject's painted box is above `compare` |
 | `ValueChanges` | the same semantic node exposes a different value after activation |
+| `SelectionChanges` | the same semantic node changes selected/pressed state |
 | `NameChanges` | the same semantic node exposes a different accessible name after the action |
 
 Outcome checks can continue past activation with literal semantic input:
