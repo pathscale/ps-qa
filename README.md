@@ -44,9 +44,11 @@ The app writes a descriptor when built with its inspector feature:
 ```
 
 `ps-qa` reads `--descriptor <path>`, or falls back to
-`target/blitz-control.json` and then the newest descriptor advertised in the
-temporary directory. It checks the pid is live, connects to that Unix socket,
-and speaks **MCP** over it: `initialize`, `tools/list`, then `tools/call`
+`target/blitz-control.json` and then the newest reachable descriptor advertised
+in the temporary directory. It probes the Unix socket itself rather than only
+checking the pid, because operating systems reuse pids while stale descriptor
+files remain. It then speaks **MCP** over that socket: `initialize`,
+`tools/list`, then `tools/call`
 against `blitz.agent.control` (drive) and `blitz.diagnostics` (inspect).
 
 The framing is length-delimited, **not** newline-delimited and not WebSocket:
