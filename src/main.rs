@@ -1610,18 +1610,9 @@ async fn run_qa(
                     })
                     .map(|node| node.name.clone());
             }
-            let driven = if check.press {
-                press_named(client, want).await.map(|()| None)
-            } else {
-                click_named_quiet(client, want).await.map(Some)
-            };
-            match driven {
-                Ok(node_id) => action_node_id = node_id,
-                Err(error) => {
-                    let how = if check.press { "press" } else { "click" };
-                    action_error = Some(format!("could not {how} {want:?}: {error}"));
-                }
-            }
+            let driven = drive_check_action(client, want, check.press).await;
+            action_error = driven.as_ref().err().cloned();
+            action_node_id = driven.ok().flatten();
             // The exact declared outcome below polls the renderer. A generic
             // whole-tree settle here both duplicates that work and waits on
             // unrelated background updates.
@@ -2355,6 +2346,29 @@ async fn click_named_quiet(client: &mut Client, want: &str) -> Result<u64> {
         }))
         .await?;
     Ok(target_id)
+}
+
+/// Drive one declared QA action and normalize its optional semantic node id.
+///
+/// Coordinate presses are an explicit generic harness diagnostic, so they do
+/// not produce a semantic action id. The normal application path is a node-id
+/// click and returns the exact node used for outcome attribution.
+async fn drive_check_action(
+    client: &mut Client,
+    want: &str,
+    coordinate_press: bool,
+) -> std::result::Result<Option<u64>, String> {
+    if coordinate_press {
+        press_named(client, want)
+            .await
+            .map(|()| None)
+            .map_err(|error| format!("could not press {want:?}: {error}"))
+    } else {
+        click_named_quiet(client, want)
+            .await
+            .map(Some)
+            .map_err(|error| format!("could not click {want:?}: {error}"))
+    }
 }
 
 /// What a captured frame contains, in the terms a person would use.
