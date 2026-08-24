@@ -153,6 +153,7 @@ tabs, then activates the exact semantic node id.
 | `Above` | the subject's painted box is above `compare` |
 | `ValueChanges` | the same semantic node exposes a different value after activation |
 | `SelectionChanges` | the same semantic node changes selected/pressed state |
+| `DistinctPositions` | every painted member of a semantic family has a distinct center |
 | `NameChanges` | the same semantic node exposes a different accessible name after the action |
 
 Outcome checks can continue past activation with literal semantic input:

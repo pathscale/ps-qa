@@ -126,6 +126,12 @@ pub enum Expect {
     /// So a check that trusts `visible` calls a control a person can see and
     /// type into dead. Geometry plus a position is the honest question here.
     PaintsNamed,
+    /// Every painted node in the matching family occupies its own position.
+    ///
+    /// A repeated family can expose correct state and non-zero boxes while
+    /// every member is stacked on the same coordinates. This is the rendered
+    /// contract for layouts such as a colour flower.
+    DistinctPositions,
     /// The exact accessible name selected for this check's click still paints.
     ///
     /// Use this for a row action whose label includes the row identity. It
@@ -466,6 +472,34 @@ pub fn verdict(
                     "no {role} named {name:?} has a box ({} in the tree: {state}); \
                      other painted matches: {other_painted}",
                     matches.len(),
+                ));
+            }
+        }
+        Expect::DistinctPositions => {
+            let painted: Vec<_> = found.iter().copied().filter(|node| paints(node)).collect();
+            if painted.len() < 2 {
+                return Err(format!(
+                    "{:?} has {} painted match(es); expected a positioned family",
+                    check.subject,
+                    painted.len()
+                ));
+            }
+            let positions: std::collections::HashSet<(i64, i64)> = painted
+                .iter()
+                .map(|node| {
+                    let bounds = node.bounds.expect("painted nodes have bounds");
+                    (
+                        ((bounds[0] + bounds[2] / 2.0) * 10.0).round() as i64,
+                        ((bounds[1] + bounds[3] / 2.0) * 10.0).round() as i64,
+                    )
+                })
+                .collect();
+            if positions.len() != painted.len() {
+                return Err(format!(
+                    "{} painted node(s) matching {:?} occupy only {} distinct position(s)",
+                    painted.len(),
+                    check.subject,
+                    positions.len()
                 ));
             }
         }
@@ -898,6 +932,29 @@ mod tests {
         )
         .expect_err("the textbox does not paint");
         assert!(error.contains("other painted matches: button id=8"));
+    }
+
+    #[test]
+    fn a_positioned_family_rejects_stacked_controls() {
+        let mut check = parse("");
+        check.subject = "radio:Theme color".into();
+        check.expect = Expect::DistinctPositions;
+        let node = |id, x, y| SemanticNode {
+            id,
+            parent: None,
+            role: "radio".into(),
+            name: format!("Theme color {id}"),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([x, y, 20.0, 20.0]),
+        };
+
+        assert!(verdict(&check, &[], &[node(1, 10.0, 10.0), node(2, 40.0, 10.0)]).is_ok());
+        let error = verdict(&check, &[], &[node(1, 10.0, 10.0), node(2, 10.0, 10.0)])
+            .expect_err("stacked controls are not a positioned family");
+        assert!(error.contains("only 1 distinct position"));
     }
 
     #[test]
