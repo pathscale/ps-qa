@@ -1680,7 +1680,6 @@ fn painted_named(nodes: &[SemanticNode], want: &str) -> bool {
     nodes.iter().any(|node| {
         (role.is_empty() || node.role == role)
             && node.name.contains(name)
-            && node.visible
             && node
                 .bounds
                 .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
@@ -1725,7 +1724,6 @@ async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
             let painted = snapshot.nodes.iter().any(|n| {
                 (role.is_empty() || n.role == role)
                     && n.name.contains(name)
-                    && n.visible
                     && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
             });
             if painted {
