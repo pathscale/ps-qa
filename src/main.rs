@@ -1577,6 +1577,11 @@ async fn run_qa(
                 bail!("no visible, sized node matching {want:?} to hover");
             };
             client
+                .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                    node_id,
+                }))
+                .await?;
+            client
                 .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
                 .await?;
             tokio::time::sleep(Duration::from_millis(25)).await;
