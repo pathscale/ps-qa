@@ -2101,10 +2101,12 @@ async fn locate_control(
                     .map(|bounds| (node, bounds))
             })
             .collect();
-        // An explicit accessible name wins over a broader substring. Without
-        // this, `Restart` selected `Restart AgencyProxy` simply because that
-        // longer label appeared first in the tree.
-        candidates.sort_by_key(|(node, _)| !exact_selector_matches_node(node, want));
+        // An explicit accessible name excludes broader substring matches.
+        // Sorting is not strong enough here: an on-screen substring can still
+        // beat an exact match below the fold when the surface preference is
+        // applied. `Restart` then selected visible `Restart AgencyProxy`
+        // instead of scrolling the exact control into view.
+        retain_exact_candidates(&mut candidates, want);
 
         // Prefer the modal in front, then the active surface, then global
         // chrome. Retained panes can keep enabled, painted controls with the
@@ -2905,6 +2907,15 @@ fn exact_selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
         return role == node.role && node.name.eq_ignore_ascii_case(name);
     }
     node.name.eq_ignore_ascii_case(selector)
+}
+
+fn retain_exact_candidates(candidates: &mut Vec<(&SemanticNode, [f64; 4])>, selector: &str) {
+    if candidates
+        .iter()
+        .any(|(node, _)| exact_selector_matches_node(node, selector))
+    {
+        candidates.retain(|(node, _)| exact_selector_matches_node(node, selector));
+    }
 }
 
 /// Named outcomes that drive or assert this control.
@@ -4587,7 +4598,8 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         InventoryClass, exact_selector_matches_node, inventory_class, name_matches,
-        outcome_check_ids, outcome_verdict, painted_named, saved_controls, selector_matches_node,
+        outcome_check_ids, outcome_verdict, painted_named, retain_exact_candidates, saved_controls,
+        selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4673,6 +4685,14 @@ mod tests {
         assert!(!exact_selector_matches_node(&proxy, "Restart"));
         assert!(exact_selector_matches_node(&restart, "button:Restart"));
         assert!(!exact_selector_matches_node(&restart, "switch:Restart"));
+
+        let mut candidates = vec![
+            (&proxy, [0.0, 0.0, 20.0, 20.0]),
+            (&restart, [0.0, 900.0, 20.0, 20.0]),
+        ];
+        retain_exact_candidates(&mut candidates, "button:Restart");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0.name, "Restart");
     }
 
     #[test]
