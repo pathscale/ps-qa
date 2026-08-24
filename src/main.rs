@@ -2918,6 +2918,7 @@ fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
             ]
             .into_iter()
             .flatten()
+            .chain(check.covers.iter().map(String::as_str))
             .any(|selector| selector_matches_node(node, selector))
         })
         .map(|check| check.id.clone())
@@ -4678,6 +4679,7 @@ mod tests {
             key: None,
             key_on: None,
             compare: None,
+            covers: Vec::new(),
             press: false,
             subject: subject.into(),
             expect: Expect::Paints,
@@ -4727,6 +4729,15 @@ mod tests {
             vec!["rename"]
         );
         assert!(outcome_check_ids(&component("Delete project", true, true), &checks).is_empty());
+    }
+
+    #[test]
+    fn an_explicit_family_selector_credits_repeated_component_rows() {
+        let mut check = check("offer-model", Some("Offer Default"), "Offer Default");
+        check.covers.push("checkbox:Offer ".into());
+        let mut sibling = component("Offer Sonnet", true, true);
+        sibling.role = "checkbox".into();
+        assert_eq!(outcome_check_ids(&sibling, &[check]), vec!["offer-model"]);
     }
 
     #[test]

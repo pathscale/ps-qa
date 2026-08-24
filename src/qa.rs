@@ -192,6 +192,15 @@ pub struct Check {
     pub key_on: Option<String>,
     /// The second named node for a relative-position expectation.
     pub compare: Option<String>,
+    /// Additional controls covered by this same rendered contract.
+    ///
+    /// Use this only for a repeated family produced from one component and
+    /// one data array, such as every `Offer {model}` checkbox. The action and
+    /// verdict still address one exact semantic node; these selectors let the
+    /// inventory credit its identical siblings without pretending a substring
+    /// chosen for activation is itself an outcome.
+    #[serde(default)]
+    pub covers: Vec<String>,
     /// Opt into generic coordinate-pointer activation instead of semantic
     /// node activation. Application suites omit this unless they explicitly
     /// intend to test hit-testing.
@@ -669,12 +678,14 @@ mod tests {
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
-             key:Some(\"Enter\"),compare:Some(\"older\"),",
+             key:Some(\"Enter\"),compare:Some(\"older\"),\
+             covers:[\"button:Save row \"],",
         );
         assert_eq!(check.type_into.as_deref(), Some("New record"));
         assert_eq!(check.text.as_deref(), Some("latest fixture"));
         assert_eq!(check.key.as_deref(), Some("Enter"));
         assert_eq!(check.compare.as_deref(), Some("older"));
+        assert_eq!(check.covers, ["button:Save row "]);
         assert_eq!(
             action_description(&check),
             "activate \"Save\", type \"latest fixture\" into \"New record\", key \"Enter\" on \"New record\""
@@ -695,6 +706,7 @@ mod tests {
             key: Some("Right".into()),
             key_on: Some("Output level".into()),
             compare: None,
+            covers: Vec::new(),
             press: false,
             subject: "Output level".into(),
             expect: Expect::ValueChanges,
