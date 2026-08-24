@@ -3542,6 +3542,14 @@ async fn open_surface(client: &mut Client, surface: &reach::Surface) -> Result<b
     if surface.opener.is_empty() {
         return Ok(true);
     }
+    // Do not activate the current tab again. Inventory intentionally calls
+    // this before and after expanding a surface; re-clicking the same opener
+    // remounts expensive application trees and adds no evidence. The marker is
+    // the same destination proof used after a real navigation.
+    let (current, _) = inspect(client).await?;
+    if reach::on_surface(&current.nodes, surface) {
+        return Ok(true);
+    }
     // A dynamic document surface has no fixed name to aim at: the profile may be scrubbed,
     // so the tab is found by shape (a tab is the button whose `Close` twin the
     // strip renders beside it) rather than by a string that would differ per
