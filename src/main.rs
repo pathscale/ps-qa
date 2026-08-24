@@ -3898,9 +3898,24 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 family: audit::family_of(&name),
                 expect: sweep::expectation_for(&name, reach::is_inert_control(&name)),
             };
-            if click_by_id(client, id).await.is_err() {
-                here.vanished += 1;
-                continue;
+            /*
+             * Stop on a failed dispatch.
+             *
+             * This id came from the snapshot immediately above and names an
+             * enabled, on-screen control. If the inspector cannot activate it,
+             * continuing is not broader coverage: a native modal or halted UI
+             * loop can leave the socket open without answering, making every
+             * later control pay the full 60-second transport timeout. One run
+             * then sat here for eighteen minutes after the ordinary sweep had
+             * previously completed in two and a half. Preserve the exact
+             * control in the error and stop before a transport failure is
+             * multiplied by the rest of the plan.
+             */
+            if let Err(error) = click_by_id(client, id).await {
+                bail!(
+                    "could not activate {name:?} (id {id}) on {:?}; stopping the sweep: {error}",
+                    surface.name
+                );
             }
             here.swept += 1;
             if cli::trace() {
