@@ -2827,6 +2827,8 @@ fn reconcile_inventory(
                 name: control.name.clone(),
                 classification: if control.classification.contains("isolated") {
                     "isolated-unverified".into()
+                } else if control.classification.contains("disabled") {
+                    "state-disabled-unverified".into()
                 } else {
                     "outcome-unverified".into()
                 },
