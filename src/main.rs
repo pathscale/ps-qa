@@ -3241,7 +3241,21 @@ fn reconcile_inventory(
         "{}",
         toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
     );
-    Ok(report.failed_existing + report.unverified)
+    // An offline report cannot execute controls that deliberately terminate
+    // the shared process or its inspector. Keep them visible in `unverified`,
+    // but let the application-owned isolated lifecycle gate decide them.
+    // Otherwise a successful disposable-process check can never make the
+    // combined workflow green.
+    let blocking_unverified = report
+        .controls
+        .iter()
+        .filter(|row| reconciliation_gap_blocks(&row.classification))
+        .count();
+    Ok(report.failed_existing + blocking_unverified)
+}
+
+fn reconciliation_gap_blocks(classification: &str) -> bool {
+    !classification.starts_with("isolated-") && !classification.starts_with("failed-")
 }
 
 async fn run_inventory(
@@ -5102,6 +5116,12 @@ mod tests {
         assert_eq!(rows[0].role, "switch");
         assert_eq!(rows[0].name, "Enable inspection");
         assert_eq!(rows[0].classification, "isolated-unverified");
+    }
+
+    #[test]
+    fn isolated_inventory_rows_remain_reported_without_blocking_reconciliation() {
+        assert!(!super::reconciliation_gap_blocks("isolated-unverified"));
+        assert!(super::reconciliation_gap_blocks("outcome-unverified"));
     }
 
     /// A bare word is a substring, because that is how a control is recalled.
