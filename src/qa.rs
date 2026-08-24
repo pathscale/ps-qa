@@ -144,6 +144,12 @@ pub enum Expect {
     /// carried from the before snapshot so a repeated accessible name cannot
     /// satisfy the assertion with a neighbouring row.
     ValueChanges,
+    /// The exact subject node's accessible name changed after the action.
+    ///
+    /// Use this for status text that reports a completed refresh or re-check.
+    /// Following the node id prevents an unrelated new status row from
+    /// satisfying the outcome.
+    NameChanges,
 }
 
 /// One thing that must be true of the running panel.
@@ -500,6 +506,15 @@ pub fn verdict(
                 })?;
             value_changed(before_node.id, before, after)?;
         }
+        Expect::NameChanges => {
+            let before_node = matching(before, &check.subject)
+                .into_iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| {
+                    format!("no painted node matching {:?} before action", check.subject)
+                })?;
+            name_changed(before_node.id, before, after)?;
+        }
     }
     Ok(())
 }
@@ -532,6 +547,29 @@ pub fn value_changed(
         .ok_or_else(|| format!("node {node_id} has no semantic value after action"))?;
     if old == new {
         return Err(format!("semantic value for node {node_id} stayed {old:?}"));
+    }
+    Ok(())
+}
+
+/// Assert that one exact semantic node changed its accessible name.
+pub fn name_changed(
+    node_id: u64,
+    before: &[SemanticNode],
+    after: &[SemanticNode],
+) -> Result<(), String> {
+    let before_node = before
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} was absent before action"))?;
+    let after_node = after
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("node {node_id} disappeared after action"))?;
+    if before_node.name == after_node.name {
+        return Err(format!(
+            "accessible name for node {node_id} stayed {:?}",
+            before_node.name
+        ));
     }
     Ok(())
 }
@@ -609,7 +647,7 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, Expect, action_description, value_changed, verdict};
+    use super::{Check, Expect, action_description, name_changed, value_changed, verdict};
     use blitz_control_protocol::SemanticNode;
 
     fn parse(extra: &str) -> Check {
@@ -686,6 +724,33 @@ mod tests {
             )
             .is_err(),
             "the exact activated id cannot be replaced by a same-name neighbour"
+        );
+    }
+
+    #[test]
+    fn a_name_check_follows_the_same_node_id() {
+        let node = |id, name: &str| SemanticNode {
+            id,
+            parent: None,
+            role: "status".into(),
+            name: name.into(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 100.0, 20.0]),
+        };
+
+        assert!(name_changed(7, &[node(7, "Refreshed 1")], &[node(7, "Refreshed 2")]).is_ok());
+        assert!(name_changed(7, &[node(7, "Refreshed 1")], &[node(7, "Refreshed 1")]).is_err());
+        assert!(
+            name_changed(
+                7,
+                &[node(7, "Refreshed 1")],
+                &[node(7, "Refreshed 1"), node(8, "Refreshed 2")],
+            )
+            .is_err(),
+            "a neighbouring status node cannot satisfy the check"
         );
     }
 
