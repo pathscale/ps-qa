@@ -2918,28 +2918,33 @@ fn retain_exact_candidates(candidates: &mut Vec<(&SemanticNode, [f64; 4])>, sele
     }
 }
 
-/// Named outcomes that drive or assert this control.
+/// Named outcomes that actually drive this control.
 ///
 /// A navigation opener and a hover are actions too: their check fails when
-/// the control cannot perform them. `subject` and `compare` are observed
-/// outcomes. Merely appearing in the inventory is intentionally absent here.
+/// the control cannot perform them. `subject` and `compare` are observations,
+/// not proof that an enabled interactive control works: crediting them let a
+/// newly painted button satisfy coverage without ever activating it. A
+/// disabled control is the exception because observing its disabled state is
+/// the complete outcome and activating it would be invalid.
 fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
     checks
         .iter()
         .filter(|check| {
-            [
+            let driven = [
                 check.open.as_deref(),
                 check.hover.as_deref(),
                 check.click.as_deref(),
                 check.type_into.as_deref(),
                 check.key_on.as_deref(),
-                check.compare.as_deref(),
-                Some(check.subject.as_str()),
             ]
             .into_iter()
             .flatten()
             .chain(check.covers.iter().map(String::as_str))
-            .any(|selector| selector_matches_node(node, selector))
+            .any(|selector| selector_matches_node(node, selector));
+            let disabled_outcome = !node.enabled
+                && matches!(check.expect, qa::Expect::Disabled)
+                && selector_matches_node(node, &check.subject);
+            driven || disabled_outcome
         })
         .map(|check| check.id.clone())
         .collect()
@@ -4718,9 +4723,9 @@ mod tests {
     }
 
     #[test]
-    fn outcome_coverage_names_the_checks_that_drive_or_assert_a_control() {
+    fn outcome_coverage_names_only_checks_that_drive_an_enabled_control() {
         let checks = [
-            check("rename", Some("Rename"), "textbox:Rename project"),
+            check("rename", Some("button:Rename"), "textbox:Rename project"),
             check("save", Some("Save"), "Saved"),
         ];
         assert_eq!(
@@ -4728,6 +4733,21 @@ mod tests {
             vec!["rename"]
         );
         assert!(outcome_check_ids(&component("Delete project", true, true), &checks).is_empty());
+        let mut editor = component("Rename project", true, true);
+        editor.role = "textbox".into();
+        assert!(outcome_check_ids(&editor, &checks).is_empty());
+    }
+
+    #[test]
+    fn observing_disabled_is_complete_coverage_without_activation() {
+        let mut disabled = component("Use the default", false, true);
+        disabled.role = "button".into();
+        let mut observed = check("disabled-default", None, "Use the default");
+        observed.expect = Expect::Disabled;
+        assert_eq!(
+            outcome_check_ids(&disabled, &[observed]),
+            vec!["disabled-default"]
+        );
     }
 
     #[test]
