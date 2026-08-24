@@ -140,6 +140,7 @@ tabs, then activates the exact semantic node id.
 | --- | --- |
 | `Paints` | the subject exists, is visible, and has a **non-zero box** |
 | `Enabled` | a painted subject accepts input after the action |
+| `Disabled` | a painted subject refuses input after the action |
 | `Vanishes` | nothing matching is on screen (it may remain in the tree) |
 | `PaintsMore` | more matching nodes are on screen than before |
 | `Grows` | more matching nodes are in the tree than before |
@@ -148,10 +149,14 @@ tabs, then activates the exact semantic node id.
 | `TargetPaints` | the exact accessible name selected for the click still paints |
 | `Above` | the subject's painted box is above `compare` |
 | `ValueChanges` | the same semantic node exposes a different value after activation |
+| `NameChanges` | the same semantic node exposes a different accessible name after the action |
 
 Outcome checks can continue past activation with literal semantic input:
 `type_into: Some("New item"), text: Some("qa audit newest"), key: Some("Enter")`.
 Text is focused and entered by node id; no coordinate pointer is involved.
+When the expectation is `ValueChanges`, ps-qa carries that exact text-field
+node id through `SetValue` and compares its semantic value before and after.
+This prevents a neighbouring same-name editor from satisfying the check.
 
 `Paints` is the one that earns its keep. A node can be in the tree, correctly
 named, and invisible; that is what a dead control looks like from the outside.
