@@ -159,6 +159,22 @@ When the expectation is `ValueChanges`, ps-qa carries that exact text-field
 node id through `SetValue` and compares its semantic value before and after.
 This prevents a neighbouring same-name editor from satisfying the check.
 
+For a repeated family rendered by one component from one data array, declare
+the shared contract explicitly with `covers`, while keeping the action and
+verdict exact:
+
+```ron
+click: Some("Offer Default"),
+covers: ["checkbox:Offer "],
+subject: "Offer Default",
+expect: ValueChanges,
+```
+
+`covers` only affects inventory reconciliation. It never broadens activation
+or lets a sibling satisfy the verdict: the live check still follows the exact
+clicked node id. `ps-qa list` prints every family selector so this credit is
+visible during review.
+
 `Paints` is the one that earns its keep. A node can be in the tree, correctly
 named, and invisible; that is what a dead control looks like from the outside.
 
@@ -229,6 +245,10 @@ an assertion with no behaviour of its own, so it is data: editing a selector is
 an edit and a re-run, not a recompile. Found by `--checks`, or
 `tests/ps-qa/`. Files are read in name order, so the group order is the filename
 order.
+
+`reconcile` decodes the emitted TOON directly, including nested control rows
+with per-control check arrays. Do not flatten or scrape that report before
+feeding it back to the tool.
 
 ```sh
 ps-qa list                      # every check, no application needed
