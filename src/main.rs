@@ -2621,15 +2621,22 @@ async fn expand_everything(client: &mut Client, surface: &reach::Surface) -> Res
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
             .collect();
-        let todo: Vec<(u64, String)> = reach::expanders(&tree.nodes)
+        let mut todo: Vec<String> = reach::expanders(&tree.nodes)
             .into_iter()
             .filter(|(id, _)| mine.contains(id))
+            .map(|(_, name)| name)
             .collect();
+        // Retained panes can expose dozens of identical disclosure names. One
+        // semantic activation on the active surface is the user action; driving
+        // every retained node toggles unrelated panes and can leave the current
+        // one exactly where it started.
+        todo.sort();
+        todo.dedup();
         if todo.is_empty() {
             break;
         }
-        for (id, _name) in todo {
-            if click_by_id(client, id).await.is_ok() {
+        for name in todo {
+            if click_named_quiet(client, &name).await.is_ok() {
                 opened += 1;
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
