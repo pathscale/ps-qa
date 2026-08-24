@@ -31,6 +31,7 @@ pub struct Descriptor {
     /// The descriptor verbatim, for the dump modes. Reprinting a re-serialized
     /// struct would hide any field this build of the tool does not know about.
     pub raw: serde_json::Value,
+    verified_reachable: bool,
 }
 
 impl Descriptor {
@@ -44,29 +45,23 @@ impl Descriptor {
     }
 
     /// Trap 8 in docs/performance.md: an unpinned descriptor directory keeps
-    /// dead instances around, the newest file can belong to a dead pid, and
-    /// every number read afterwards describes a process that is not running.
-    /// Cheap to check, so check rather than warn about it in prose.
+    /// dead instances around. Pid existence is not enough: macOS reuses pids,
+    /// so an unrelated process can make a stale descriptor look current. The
+    /// control socket is the service, and a successful connection is the only
+    /// liveness check that proves the descriptor can actually be used.
+    fn is_reachable(&self) -> bool {
+        std::os::unix::net::UnixStream::connect(self.socket_path()).is_ok()
+    }
+
     pub fn warn_if_stale(&self) {
-        if !pid_is_live(self.descriptor.pid) {
+        if !self.verified_reachable && !self.is_reachable() {
             eprintln!(
-                "warning: descriptor {} names pid {}, which is not running; \
-                 numbers read from it would describe a dead instance",
+                "warning: descriptor {} names pid {}, but its control socket is unreachable",
                 self.path.display(),
                 self.descriptor.pid
             );
         }
     }
-}
-
-fn pid_is_live(pid: u32) -> bool {
-    // No libc dependency for one `kill(pid, 0)`, and /proc does not exist on
-    // macOS. If `ps` itself cannot be run, assume live rather than cry wolf.
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(true)
 }
 
 /// Locate a running inspector, preferring an explicitly pinned descriptor.
@@ -89,9 +84,10 @@ pub fn discover(explicit: Option<&str>) -> Result<Descriptor> {
     // previous run instead — which is how preferring a live pid still failed.
     let pinned = PathBuf::from("target/blitz-control.json");
     if pinned.exists()
-        && let Ok(descriptor) = read_descriptor(&pinned)
-        && pid_is_live(descriptor.descriptor.pid)
+        && let Ok(mut descriptor) = read_descriptor(&pinned)
+        && descriptor.is_reachable()
     {
+        descriptor.verified_reachable = true;
         return Ok(descriptor);
     }
 
@@ -107,7 +103,7 @@ pub fn discover(explicit: Option<&str>) -> Result<Descriptor> {
         .collect();
     found.sort();
 
-    // Newest *live* instance, not simply newest.
+    // Newest *reachable* instance, not simply newest.
     //
     // Descriptors outlive the process that wrote them, and a machine that has
     // run the app more than once has a directory full of them. Taking the most
@@ -116,32 +112,22 @@ pub fn discover(explicit: Option<&str>) -> Result<Descriptor> {
     // and a set of numbers describing a process nobody is looking at. The
     // warning for that case already existed and was printed immediately before
     // connecting anyway.
-    let mut newest: Option<Descriptor> = None;
     for (_, path) in found.iter().rev() {
-        let Ok(descriptor) = read_descriptor(path) else {
+        let Ok(mut descriptor) = read_descriptor(path) else {
             continue;
         };
-        if pid_is_live(descriptor.descriptor.pid) {
+        if descriptor.is_reachable() {
+            descriptor.verified_reachable = true;
             return Ok(descriptor);
-        }
-        if newest.is_none() {
-            newest = Some(descriptor);
         }
     }
 
-    match newest {
-        // Nothing live. Return the most recent anyway rather than refusing:
-        // `warn_if_stale` says so plainly at the call site, and a dump of a
-        // dead instance's descriptor is still the fastest way to see that no
-        // diagnostics build is running.
-        Some(descriptor) => Ok(descriptor),
-        None => bail!(
-            "no inspector descriptor found; is a diagnostics build running?\n\
-             looked at target/blitz-control.json and {}. Pass --descriptor \
-             <path> to name one.",
-            root.display()
-        ),
-    }
+    bail!(
+        "no reachable inspector descriptor found; is a diagnostics build running?\n\
+         looked at target/blitz-control.json and {}. Pass --descriptor \
+         <path> to inspect a specific descriptor.",
+        root.display()
+    )
 }
 
 fn read_descriptor(path: &Path) -> Result<Descriptor> {
@@ -155,6 +141,7 @@ fn read_descriptor(path: &Path) -> Result<Descriptor> {
         path: path.to_path_buf(),
         descriptor,
         raw,
+        verified_reachable: false,
     })
 }
 
