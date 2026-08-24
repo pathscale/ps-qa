@@ -1145,7 +1145,7 @@ async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) ->
             .iter()
             .filter(|node| {
                 !over.is_empty()
-                    && node.name.contains(over)
+                    && selector_matches_node(node, over)
                     && node
                         .bounds
                         .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
