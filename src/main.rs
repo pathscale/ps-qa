@@ -1414,13 +1414,26 @@ async fn run_qa(
                  * navigating, while a single row click may fold it, so
                  * committing to either gesture broke the other set of checks.
                  */
-                let _ = click_named_quiet(client, want).await;
+                let first_click = click_named_quiet(client, want).await;
                 settle(client, None).await?;
                 let (now, _) = inspect(client).await?;
-                let there = destination.map_or_else(
+                let mut there = destination.map_or_else(
                     || painted_named(&now.nodes, want_here),
                     |surface| reach::on_surface(&now.nodes, surface),
                 );
+                // A surface transition can briefly remove the opener before
+                // its replacement paints. Retry the same semantic click after
+                // settling; escalating that transient miss straight to a
+                // document-row double-click skips ordinary button handlers.
+                if !there && first_click.is_err() {
+                    let _ = click_named_quiet(client, want).await;
+                    settle(client, None).await?;
+                    let (retried, _) = inspect(client).await?;
+                    there = destination.map_or_else(
+                        || painted_named(&retried.nodes, want_here),
+                        |surface| reach::on_surface(&retried.nodes, surface),
+                    );
+                }
                 if !there && open_named(client, want).await.is_err() {
                     if let Some(home) = reach::profile().home_opener.as_deref() {
                         let _ = click_named_quiet(client, home).await;
