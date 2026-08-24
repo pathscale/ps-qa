@@ -1145,25 +1145,18 @@ async fn press_key(
                     .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
         })
     });
-    if let Some(target) = by_id.or_else(|| {
-        snapshot
-            .nodes
-            .iter()
-            .filter(|node| {
-                !over.is_empty()
-                    && selector_matches_node(node, over)
-                    && node
-                        .bounds
-                        .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-            })
-            .filter_map(|node| node.bounds.map(|b| (node, b)))
-            .max_by(|a, b| {
-                (a.1[2] * a.1[3])
-                    .partial_cmp(&(b.1[2] * b.1[3]))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(node, _)| node.id)
-    }) {
+    let target = if by_id.is_some() || over.is_empty() {
+        by_id
+    } else {
+        match locate_control(client, over, &[]).await {
+            Ok((node_id, _)) => Some(node_id),
+            Err(error) if require_target => {
+                bail!("no enabled, painted key target matching {over:?}: {error}")
+            }
+            Err(_) => None,
+        }
+    };
+    if let Some(target) = target {
         client
             .agent(&AgentControlRequest::Act(AgentAction::Click {
                 node_id: target,
