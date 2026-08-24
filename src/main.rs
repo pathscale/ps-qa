@@ -1097,9 +1097,7 @@ fn find_text_field<'a>(nodes: &'a [SemanticNode], want: &str) -> Option<&'a Sema
         })
         .collect();
 
-    let matches_name = |node: &&SemanticNode| {
-        want.is_empty() || node.name.to_lowercase().contains(&want.to_lowercase())
-    };
+    let matches_name = |node: &&SemanticNode| want.is_empty() || selector_matches_node(node, want);
     for scope in [&modal_scope, &surface_scope] {
         if let Some(field) = fields
             .iter()
