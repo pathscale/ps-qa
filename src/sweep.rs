@@ -142,7 +142,20 @@ pub fn has_button(nodes: &[SemanticNode], name: &str) -> bool {
     let wanted = name.to_lowercase();
     nodes
         .iter()
-        .any(|node| node.role == "button" && node.name.to_lowercase() == wanted)
+        .any(|node| painted_button(node) && node.name.to_lowercase() == wanted)
+}
+
+/// Whether a button belongs to what the user can currently operate.
+///
+/// Retained panes keep hidden copies of rows after another pane replaces them.
+/// Presence anywhere in the tree therefore cannot prove a row survived a
+/// delete; it only proves some inactive pane remembers an old copy.
+fn painted_button(node: &SemanticNode) -> bool {
+    node.role == "button"
+        && node.visible
+        && node
+            .bounds
+            .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
 }
 
 /// The result of pressing one button.
@@ -293,7 +306,8 @@ fn confirmation_appeared(before: &[SemanticNode], after: &[SemanticNode]) -> boo
             .iter()
             .filter(|node| {
                 let lower = node.name.to_lowercase();
-                lower == "cancel" || lower.ends_with("cancel") || lower.contains("delete?")
+                painted_button(node)
+                    && (lower == "cancel" || lower.ends_with("cancel") || lower.contains("delete?"))
             })
             .count()
     };
@@ -363,6 +377,36 @@ mod tests {
             button("Cancel"),
         ];
         assert_eq!(judge(&case, &before, &after), None);
+    }
+
+    #[test]
+    fn a_hidden_retained_row_does_not_make_a_delete_fail() {
+        let case = Case {
+            id: 1,
+            name: "Delete thing".to_owned(),
+            family: "delete",
+            expect: expectation_for("Delete thing", false),
+        };
+        let before = vec![button("Delete thing")];
+        let mut retained = button("Delete thing");
+        retained.visible = false;
+        let after = vec![retained];
+        assert_eq!(judge(&case, &before, &after), None);
+    }
+
+    #[test]
+    fn a_hidden_retained_cancel_is_not_a_confirmation() {
+        let case = Case {
+            id: 1,
+            name: "Delete thing".to_owned(),
+            family: "delete",
+            expect: expectation_for("Delete thing", false),
+        };
+        let before = vec![button("Delete thing")];
+        let mut hidden_cancel = button("Cancel");
+        hidden_cancel.visible = false;
+        let after = vec![button("Delete thing"), hidden_cancel];
+        assert!(judge(&case, &before, &after).is_some());
     }
 
     #[test]
