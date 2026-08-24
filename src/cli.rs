@@ -337,6 +337,20 @@ pub enum Command {
     Cover {
         /// Restrict to one surface.
         surface: Option<String>,
+        /// Activate only controls that have no named outcome check.
+        ///
+        /// Inventory still materializes and accounts for every concrete
+        /// control. Controls already driven by the ordered outcome suite are
+        /// not clicked a second time, which avoids turning a coverage audit
+        /// into a destructive replay of every repeated row action.
+        #[arg(long)]
+        unmapped_only: bool,
+        /// Where the named outcome checks live. Defaults to `tests/ps-qa`.
+        #[arg(long)]
+        checks: Option<PathBuf>,
+        /// Hard wall-clock budget for the complete sweep.
+        #[arg(long, default_value_t = 180)]
+        max_seconds: u64,
     },
 
     /// Count reachable, unreachable, anonymous, manual and outcome-declared
