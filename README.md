@@ -265,7 +265,10 @@ order.
 
 `reconcile` decodes the emitted TOON directly, including nested control rows
 with per-control check arrays. Do not flatten or scrape that report before
-feeding it back to the tool.
+feeding it back to the tool. Isolated controls remain listed as unverified but
+do not make offline reconciliation fail: the application must run and gate
+their disposable-process outcome separately. Ordinary unmapped controls and
+previously recorded failures still return a nonzero exit status.
 
 ```sh
 ps-qa list                      # every check, no application needed
