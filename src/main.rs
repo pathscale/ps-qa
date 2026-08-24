@@ -2869,6 +2869,19 @@ async fn materialize_deferred_content(
 /// This is semantic node-id activation. Pager labels are application data, so
 /// the profile supplies fragments such as ` more records`; a generic `Show`
 /// heuristic would also activate unrelated disclosure controls.
+fn is_pagination_control(node: &SemanticNode, scope: &HashSet<u64>, patterns: &[String]) -> bool {
+    scope.contains(&node.id)
+        && node.role == "button"
+        && node.enabled
+        && node.visible
+        && node
+            .bounds
+            .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+        && patterns
+            .iter()
+            .any(|pattern| name_matches(&node.name, pattern))
+}
+
 async fn materialize_paginated_content(
     client: &mut Client,
     surface: &reach::Surface,
@@ -2883,17 +2896,10 @@ async fn materialize_paginated_content(
         let scope: HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
             .collect();
-        let target = tree.nodes.iter().find(|node| {
-            scope.contains(&node.id)
-                && node.role == "button"
-                && node.enabled
-                && node
-                    .bounds
-                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-                && patterns
-                    .iter()
-                    .any(|pattern| name_matches(&node.name, pattern))
-        });
+        let target = tree
+            .nodes
+            .iter()
+            .find(|node| is_pagination_control(node, &scope, patterns));
         let Some(target) = target else {
             return Ok(revealed);
         };
@@ -2920,16 +2926,11 @@ async fn materialize_paginated_content(
             revealed += 1;
             tokio::time::sleep(Duration::from_millis(5)).await;
             let (after, _) = inspect(client).await?;
+            let after_scope: HashSet<u64> = reach::on_surface_subtree(&after.nodes, surface)
+                .into_iter()
+                .collect();
             let still_present = after.nodes.iter().any(|node| {
-                node.id == node_id
-                    && node.role == "button"
-                    && node.enabled
-                    && node
-                        .bounds
-                        .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-                    && patterns
-                        .iter()
-                        .any(|pattern| name_matches(&node.name, pattern))
+                node.id == node_id && is_pagination_control(node, &after_scope, patterns)
             });
             if !still_present {
                 removed = true;
@@ -4769,12 +4770,13 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, exact_selector_matches_node, inventory_class, name_matches,
-        outcome_check_ids, outcome_verdict, painted_named, retain_exact_candidates, saved_controls,
-        selector_matches_node,
+        InventoryClass, exact_selector_matches_node, inventory_class, is_pagination_control,
+        name_matches, outcome_check_ids, outcome_verdict, painted_named, retain_exact_candidates,
+        saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
+    use std::collections::HashSet;
 
     fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
         SemanticNode {
@@ -4816,6 +4818,22 @@ mod tests {
             inventory_class(&component("Synchronize", true, true), false, false),
             InventoryClass::Reachable
         );
+    }
+
+    #[test]
+    fn a_retained_hidden_pager_is_not_activated() {
+        let scope = HashSet::from([1]);
+        let patterns = vec![" more projects".to_owned()];
+        assert!(is_pagination_control(
+            &component("Show 5 more projects", true, true),
+            &scope,
+            &patterns
+        ));
+        assert!(!is_pagination_control(
+            &component("Show 5 more projects", true, false),
+            &scope,
+            &patterns
+        ));
     }
 
     fn check(id: &str, click: Option<&str>, subject: &str) -> Check {
