@@ -191,7 +191,10 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
             }
         }
         Expectation::Adds => {
-            if after.len() > before.len() {
+            // A create action may either reveal the new UI or disappear once
+            // its external resource exists (for example, creating a recommended
+            // directory). Both are visible acknowledgements of success.
+            if after.len() > before.len() || !has_button(after, &case.name) {
                 None
             } else {
                 Some(format!(
@@ -235,11 +238,15 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
             let controls = |nodes: &[SemanticNode]| {
                 let mut rows: Vec<(String, bool)> = nodes
                     .iter()
-                    // Copy controls commonly replace their own label with
-                    // "Copied" for a moment. That is success feedback, not a
-                    // document mutation; changes to every neighbouring
-                    // control remain part of the comparison.
-                    .filter(|node| node.role == "button" && node.id != case.id)
+                    // Copy feedback may retain the node or remount it with a
+                    // `Copied …` label. Ignore that whole feedback family;
+                    // changes to every non-copy neighbour still fail.
+                    .filter(|node| {
+                        let name = node.name.to_lowercase();
+                        node.role == "button"
+                            && !name.starts_with("copy")
+                            && !name.starts_with("copied")
+                    })
                     .map(|node| (node.name.clone(), node.enabled))
                     .collect();
                 rows.sort();
@@ -441,8 +448,23 @@ mod tests {
         copy.id = case.id;
         let neighbour = button("Neighbour");
         let before = vec![copy.clone(), neighbour.clone()];
+        copy.id = 3;
         copy.name = "Copied session id".to_owned();
         let after = vec![copy, neighbour];
+
+        assert_eq!(judge(&case, &before, &after), None);
+    }
+
+    #[test]
+    fn create_can_acknowledge_success_by_removing_its_action() {
+        let case = Case {
+            id: 1,
+            name: "Create recommended folder".to_owned(),
+            family: "add",
+            expect: expectation_for("Create recommended folder", false),
+        };
+        let before = vec![button("Create recommended folder"), button("Neighbour")];
+        let after = vec![button("Created"), button("Neighbour")];
 
         assert_eq!(judge(&case, &before, &after), None);
     }
