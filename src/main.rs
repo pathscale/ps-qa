@@ -3646,13 +3646,23 @@ async fn settle_on(client: &mut Client, surface: &reach::Surface) -> Result<bool
 /// only separable from this: a stale id after a re-sort, a tab click walking off
 /// the surface, and a collapse hiding its own neighbours all read the same until
 /// you can see which click preceded them.
-async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
+async fn run_cover(
+    client: &mut Client,
+    only: Option<&str>,
+    unmapped_only: bool,
+    checks_dir: Option<&std::path::Path>,
+) -> Result<usize> {
     let mut total = reach::Coverage::default();
     let mut failures: Vec<(String, String, String)> = Vec::new();
     // Named, so the manual worklist at the end is what this run actually met.
     let mut skipped_manual: Vec<String> = Vec::new();
     // Named separately: these remain automated work, but need a disposable app.
     let mut skipped_isolated: Vec<String> = Vec::new();
+    let checks = if unmapped_only {
+        qa::checks(checks_dir).map_err(eyre::Report::msg)?
+    } else {
+        Vec::new()
+    };
 
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
@@ -3786,6 +3796,8 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
                 // screen and cannot be dismissed from here.
                 here.manual += 1;
                 skipped_manual.push(node.name.clone());
+            } else if unmapped_only && !outcome_check_ids(node, &checks).is_empty() {
+                here.outcome_declared += 1;
             } else if reach::closes_a_surface(&node.name) {
                 /*
                  * Swept, but after everything that stands on the tab it
@@ -3922,7 +3934,16 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
              * control in the error and stop before a transport failure is
              * multiplied by the rest of the plan.
              */
-            if let Err(error) = click_by_id(client, id).await {
+            let activation =
+                tokio::time::timeout(Duration::from_millis(900), click_by_id(client, id))
+                    .await
+                    .map_err(|_| {
+                        eyre!(
+                            "activation exceeded 900ms for {name:?} (id {id}) on {:?}",
+                            surface.name
+                        )
+                    })?;
+            if let Err(error) = activation {
                 bail!(
                     "could not activate {name:?} (id {id}) on {:?}; stopping the sweep: {error}",
                     surface.name
@@ -3995,6 +4016,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
 
         total.in_tree += here.in_tree;
         total.swept += here.swept;
+        total.outcome_declared += here.outcome_declared;
         total.unreachable += here.unreachable;
         total.hidden += here.hidden;
         total.vanished += here.vanished;
@@ -4500,8 +4522,24 @@ async fn main() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(400)).await;
             println!("pressed");
         }
-        cli::Command::Cover { surface } => {
-            let failures = run_cover(&mut client, surface.as_deref()).await?;
+        cli::Command::Cover {
+            surface,
+            unmapped_only,
+            checks,
+            max_seconds,
+        } => {
+            let result = tokio::time::timeout(
+                Duration::from_secs(max_seconds),
+                run_cover(
+                    &mut client,
+                    surface.as_deref(),
+                    unmapped_only,
+                    checks.as_deref(),
+                ),
+            )
+            .await
+            .map_err(|_| eyre!("coverage sweep exceeded {max_seconds}s"))?;
+            let failures = result?;
             if failures > 0 {
                 std::process::exit(1);
             }

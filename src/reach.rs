@@ -685,6 +685,12 @@ pub fn hover_row_ids(nodes: &[SemanticNode], row_role: &str, window: (f64, f64))
 pub struct Coverage {
     pub in_tree: usize,
     pub swept: usize,
+    /// Already driven and judged by a named rendered outcome.
+    ///
+    /// `cover --unmapped-only` still inventories every concrete instance, but
+    /// does not destructively replay controls whose component contract already
+    /// passed in the ordered outcome suite.
+    pub outcome_declared: usize,
     pub unreachable: usize,
     pub hidden: usize,
     /// Planned, then gone by the time its turn came.
@@ -736,6 +742,7 @@ impl Coverage {
 
     fn bucketed(&self) -> usize {
         self.swept
+            + self.outcome_declared
             + self.unreachable
             + self.hidden
             + self.vanished
@@ -748,7 +755,7 @@ impl Coverage {
 
     pub fn line(&self) -> String {
         format!(
-            "{} buttons{}: {} swept, {} unreachable, {} hidden, {} vanished, {} nav, {} manual, {} isolated, {} blocked{}",
+            "{} buttons{}: {} swept, {} outcome-declared, {} unreachable, {} hidden, {} vanished, {} nav, {} manual, {} isolated, {} blocked{}",
             self.total(),
             if self.revealed > 0 {
                 format!(" ({} on open, {} revealed)", self.in_tree, self.revealed)
@@ -756,6 +763,7 @@ impl Coverage {
                 String::new()
             },
             self.swept,
+            self.outcome_declared,
             self.unreachable,
             self.hidden,
             self.vanished,
@@ -1054,6 +1062,7 @@ mod tests {
         let full = Coverage {
             in_tree: 11,
             swept: 3,
+            outcome_declared: 0,
             unreachable: 2,
             hidden: 1,
             vanished: 1,
@@ -1065,6 +1074,14 @@ mod tests {
         };
         assert!(full.accounted());
         assert!(!full.line().contains("UNACCOUNTED"));
+
+        let declared = Coverage {
+            in_tree: 2,
+            outcome_declared: 2,
+            ..Default::default()
+        };
+        assert!(declared.accounted());
+        assert!(declared.line().contains("2 outcome-declared"));
 
         let leaky = Coverage {
             in_tree: 10,
