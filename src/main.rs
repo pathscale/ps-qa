@@ -1481,6 +1481,21 @@ async fn run_qa(
             settle(client, None).await?;
         }
 
+        let (expanded, _) = inspect(client).await?;
+        if !painted_named(&expanded.nodes, action_target)
+            && let Some(surface) = reach::surfaces()
+                .iter()
+                .find(|surface| reach::on_surface(&expanded.nodes, surface))
+        {
+            let reveals = reveal_deferred_content(client, surface, action_target).await?;
+            if cli::trace() && reveals > 0 {
+                println!(
+                    "        revealed deferred content for {action_target:?} in {reveals} step(s)"
+                );
+            }
+            settle(client, None).await?;
+        }
+
         let (before, _) = inspect(client).await?;
 
         // Hover first: the row actions do not exist until `pointerenter`.
@@ -2671,6 +2686,60 @@ async fn expand_everything(client: &mut Client, surface: &reach::Surface) -> Res
         }
     }
     Ok(opened)
+}
+
+/// Reveal lazily mounted content on the active surface without guessing a
+/// coordinate or knowing an application's section names.
+///
+/// Some long settings pages render their section shells first and mount each
+/// body only when scrolling approaches it. If a check names a control in a
+/// deferred body, that control cannot be addressed yet. The deepest rendered
+/// node is the semantic equivalent of dragging the page toward its end; after
+/// each node-ID reveal the tree is inspected again and the requested control
+/// wins as soon as it has a real box.
+async fn reveal_deferred_content(
+    client: &mut Client,
+    surface: &reach::Surface,
+    want: &str,
+) -> Result<usize> {
+    let mut previous = None;
+    for step in 0..8 {
+        let (snapshot, _) = inspect(client).await?;
+        if painted_named(&snapshot.nodes, want) {
+            return Ok(step);
+        }
+        let scope: HashSet<u64> = reach::on_surface_subtree(&snapshot.nodes, surface)
+            .into_iter()
+            .collect();
+        let Some(target) = snapshot
+            .nodes
+            .iter()
+            .filter(|node| scope.contains(&node.id))
+            .filter_map(|node| {
+                node.bounds
+                    .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+                    .map(|bounds| (node.id, bounds[1] + bounds[3]))
+            })
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            return Ok(step);
+        };
+        if previous == Some(target.0) && step > 0 {
+            return Ok(step);
+        }
+        previous = Some(target.0);
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                node_id: target.0,
+            }))
+            .await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    Ok(8)
 }
 
 /// Hover every row on the surface, so hover-revealed controls enter the tree.
