@@ -1091,7 +1091,9 @@ fn find_text_field<'a>(nodes: &'a [SemanticNode], want: &str) -> Option<&'a Sema
         .filter(|node| {
             matches!(node.role.as_str(), "textbox" | "textarea" | "input")
                 && node.enabled
-                && reach::onscreen(node)
+                && node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
         })
         .collect();
 
@@ -1132,16 +1134,24 @@ async fn press_key(client: &mut Client, name: &str, count: usize, over: &str) ->
     // empty name, so no substring can address it. The slider is one, which is
     // why targeting by node id has to be possible at all.
     let by_id = over.parse::<u64>().ok().filter(|id| {
-        snapshot
-            .nodes
-            .iter()
-            .any(|node| node.id == *id && node.visible)
+        snapshot.nodes.iter().any(|node| {
+            node.id == *id
+                && node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+        })
     });
     if let Some(target) = by_id.or_else(|| {
         snapshot
             .nodes
             .iter()
-            .filter(|node| node.visible && !over.is_empty() && node.name.contains(over))
+            .filter(|node| {
+                !over.is_empty()
+                    && node.name.contains(over)
+                    && node
+                        .bounds
+                        .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+            })
             .filter_map(|node| node.bounds.map(|b| (node, b)))
             .max_by(|a, b| {
                 (a.1[2] * a.1[3])
