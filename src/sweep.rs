@@ -206,7 +206,24 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
         }
         Expectation::Changes => {
             if tree_fingerprint(before) == tree_fingerprint(after) {
-                Some("nothing in the tree changed".to_owned())
+                let selected_choice = before
+                    .iter()
+                    .find(|node| node.id == case.id)
+                    .filter(|node| node.selected)
+                    .is_some_and(|selected| {
+                        before.iter().any(|sibling| {
+                            sibling.id != selected.id
+                                && sibling.parent == selected.parent
+                                && sibling.role == selected.role
+                                && sibling.enabled
+                                && !sibling.selected
+                        })
+                    });
+                if selected_choice {
+                    None
+                } else {
+                    Some("nothing in the tree changed".to_owned())
+                }
             } else {
                 None
             }
@@ -392,6 +409,28 @@ mod tests {
         let mut valued = before.clone();
         valued[0].value = Some("large".to_owned());
         assert_eq!(judge(&selected_case, &before, &valued), None);
+    }
+
+    #[test]
+    fn reselecting_the_current_choice_is_an_expected_noop_but_a_lone_toggle_is_not() {
+        let case = Case {
+            id: 1,
+            name: "Softness 0%".to_owned(),
+            family: "softness",
+            expect: Expectation::Changes,
+        };
+        let mut selected = button("Softness 0%");
+        selected.id = 1;
+        selected.parent = Some(9);
+        selected.selected = true;
+        let mut alternative = button("Softness 50%");
+        alternative.id = 2;
+        alternative.parent = Some(9);
+        let choices = vec![selected.clone(), alternative];
+        assert_eq!(judge(&case, &choices, &choices), None);
+
+        let lone = vec![selected];
+        assert!(judge(&case, &lone, &lone).is_some());
     }
 
     #[test]
