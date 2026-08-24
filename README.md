@@ -282,3 +282,6 @@ application that names its tabs differently will need that rule widened.
 Outcome suites should also list deterministic fixture document names in
 `document_openers`; this lets repeated checks reuse the open document without
 guessing that an unrelated control such as `New document` is a document name.
+Paged lists can similarly declare `pagination_controls` name fragments. The
+inventory activates those exact semantic controls until all pages are mounted
+before it counts component instances.
