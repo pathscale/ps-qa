@@ -2702,12 +2702,11 @@ async fn reveal_deferred_content(
     surface: &reach::Surface,
     want: &str,
 ) -> Result<usize> {
-    if let Some(field) = surface.reveal_with.as_deref() {
-        type_text(client, field, "ps-qa reveal deferred content").await?;
-        type_text(client, field, "").await?;
+    let materialized = materialize_deferred_content(client, surface).await?;
+    if materialized > 0 {
         let (snapshot, _) = inspect(client).await?;
         if painted_named(&snapshot.nodes, want) {
-            return Ok(2);
+            return Ok(materialized);
         }
     }
     for step in 0..8 {
@@ -2743,6 +2742,20 @@ async fn reveal_deferred_content(
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     Ok(8)
+}
+
+/// Ask an application-declared search field to mount all deferred rows, then
+/// restore the empty query before the audit reads or activates them.
+async fn materialize_deferred_content(
+    client: &mut Client,
+    surface: &reach::Surface,
+) -> Result<usize> {
+    let Some(field) = surface.reveal_with.as_deref() else {
+        return Ok(0);
+    };
+    type_text(client, field, "ps-qa reveal deferred content").await?;
+    type_text(client, field, "").await?;
+    Ok(2)
 }
 
 /// Hover every row on the surface, so hover-revealed controls enter the tree.
@@ -3124,6 +3137,7 @@ async fn run_inventory(
             });
             continue;
         }
+        materialize_deferred_content(client, surface).await?;
         let rows_hovered = hover_all_rows(client).await?;
         let (tree, _) = inspect(client).await?;
         let mine: std::collections::HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
@@ -3597,6 +3611,7 @@ async fn run_cover(client: &mut Client, only: Option<&str>) -> Result<usize> {
             println!("- {:<10} left during expansion, skipping\n", surface.name);
             continue;
         }
+        materialize_deferred_content(client, surface).await?;
         let hovered = hover_all_rows(client).await?;
 
         /*
