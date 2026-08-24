@@ -1206,7 +1206,7 @@ async fn press_key(
         }
         sleep_pace().await;
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(25)).await;
     Ok(())
 }
 
@@ -1274,7 +1274,7 @@ async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<u64> {
     if let DebugResponse::Error(error) = answer.response {
         bail!("{} ({})", error.message, error.code);
     }
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(25)).await;
     Ok(field.id)
 }
 
@@ -1320,6 +1320,31 @@ async fn click_named(client: &mut Client, want: &str) -> Result<()> {
     Ok(())
 }
 
+/// Wait only for the destination a navigation check declared.
+///
+/// Background counters and provider refreshes can keep the whole semantic tree
+/// changing indefinitely. They are irrelevant to whether the requested panel
+/// arrived, so navigation gets the same sub-second budget as every other QA
+/// action and polls its exact marker.
+async fn wait_for_arrival(
+    client: &mut Client,
+    destination: Option<&reach::Surface>,
+    want_here: &str,
+) -> Result<bool> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
+    loop {
+        let (tree, _) = inspect(client).await?;
+        let arrived = destination.map_or_else(
+            || painted_named(&tree.nodes, want_here),
+            |surface| reach::on_surface(&tree.nodes, surface),
+        );
+        if arrived || tokio::time::Instant::now() >= deadline {
+            return Ok(arrived);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Drive every panel check and report what the renderer did.
 ///
 /// Each check runs against the live tree, and the three steps are separated on
@@ -1355,6 +1380,7 @@ async fn run_qa(
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
 
     for check in selected {
+        let check_started = Instant::now();
         /*
          * Navigate first, and snapshot *after*, or the baseline is the wrong
          * surface entirely and every count is measured against a screen the
@@ -1415,36 +1441,35 @@ async fn run_qa(
                  * committing to either gesture broke the other set of checks.
                  */
                 let first_click = click_named_quiet(client, want).await;
-                settle(client, None).await?;
-                let (now, _) = inspect(client).await?;
-                let mut there = destination.map_or_else(
-                    || painted_named(&now.nodes, want_here),
-                    |surface| reach::on_surface(&now.nodes, surface),
-                );
+                let mut there = wait_for_arrival(client, destination, want_here).await?;
                 // A surface transition can briefly remove the opener before
                 // its replacement paints. Retry the same semantic click after
                 // settling; escalating that transient miss straight to a
                 // document-row double-click skips ordinary button handlers.
                 if !there && first_click.is_err() {
                     let _ = click_named_quiet(client, want).await;
-                    settle(client, None).await?;
-                    let (retried, _) = inspect(client).await?;
-                    there = destination.map_or_else(
-                        || painted_named(&retried.nodes, want_here),
-                        |surface| reach::on_surface(&retried.nodes, surface),
-                    );
+                    there = wait_for_arrival(client, destination, want_here).await?;
                 }
-                if !there && open_named(client, want).await.is_err() {
+                if !there && open_named(client, want).await.is_ok() {
+                    there = wait_for_arrival(client, destination, want_here).await?;
+                }
+                if !there {
                     if let Some(home) = reach::profile().home_opener.as_deref() {
                         let _ = click_named_quiet(client, home).await;
                     }
-                    settle(client, None).await?;
                     if let Err(error) = open_named(client, want).await {
                         open_error = Some(format!("could not open {want:?}: {error}"));
+                    } else if !wait_for_arrival(client, destination, want_here).await? {
+                        open_error = Some(format!(
+                            "could not open {want:?}: destination did not paint within 900ms"
+                        ));
                     }
                 }
             }
-            settle(client, None).await?;
+            // The declared outcome below is the settle condition. Waiting for
+            // an unrelated whole-tree node count to stabilize makes every
+            // check pay for background updates and can hide transient UI
+            // acknowledgements such as "Copied".
         }
 
         if open_error.is_none()
@@ -1453,7 +1478,7 @@ async fn run_qa(
             if let Err(error) = click_named_quiet(client, want).await {
                 open_error = Some(format!("could not prepare {want:?}: {error}"));
             }
-            settle(client, None).await?;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         /*
@@ -1482,7 +1507,7 @@ async fn run_qa(
             if cli::trace() && opened > 0 {
                 println!("        opened {opened} collapsed section(s) for {action_target:?}");
             }
-            settle(client, None).await?;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         let (expanded, _) = inspect(client).await?;
@@ -1497,7 +1522,7 @@ async fn run_qa(
                     "        revealed deferred content for {action_target:?} in {reveals} step(s)"
                 );
             }
-            settle(client, None).await?;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         let (before, _) = inspect(client).await?;
@@ -1524,7 +1549,7 @@ async fn run_qa(
             client
                 .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
                 .await?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         // Then the action, if this check is about one. A click that cannot be
@@ -1556,18 +1581,9 @@ async fn run_qa(
                     click_error = Some(format!("could not {how} {want:?}: {error}"));
                 }
             }
-            /*
-             * Long enough for the *slowest* thing a control opens.
-             *
-             * 600ms was tuned on dialogs, which appear immediately. The rename
-             * editor does not: traced against a running build, the press
-             * landed and the editor was on screen at 300x21 a moment later,
-             * but the `after` snapshot had already been taken and the check
-             * reported the control dead. A settle time that varies by what is
-             * being driven is how a working control reads as broken, so this
-             * is the slow case for everything.
-             */
-            settle(client, None).await?;
+            // The exact declared outcome below polls the renderer. A generic
+            // whole-tree settle here both duplicates that work and waits on
+            // unrelated background updates.
         }
 
         if click_error.is_none()
@@ -1596,10 +1612,6 @@ async fn run_qa(
                 click_error = Some(format!("could not send {key:?}: {error}"));
             }
         }
-        if check.text.is_some() || check.key.is_some() {
-            settle(client, None).await?;
-        }
-
         let action_error = open_error.or(click_error);
         let transport_timed_out = action_error
             .as_deref()
@@ -1616,7 +1628,7 @@ async fn run_qa(
         } else {
             inspect(client).await?.0
         };
-        let outcome = match action_error {
+        let mut outcome = match action_error {
             Some(error) if transport_timed_out => outcome_verdict(
                 check,
                 &before.nodes,
@@ -1634,10 +1646,29 @@ async fn run_qa(
                 action_node_id,
             ),
         };
+        let elapsed = check_started.elapsed();
+        if elapsed > Duration::from_secs(1) {
+            let timing = format!(
+                "check exceeded 1000ms ({:.0}ms)",
+                elapsed.as_secs_f64() * 1000.0
+            );
+            outcome = Err(match outcome {
+                Ok(()) => timing,
+                Err(error) => format!("{error}; {timing}"),
+            });
+        }
         if cli::trace() {
             match &outcome {
-                Ok(()) => println!("        verdict pass: {}", check.id),
-                Err(error) => println!("        verdict fail: {}: {error}", check.id),
+                Ok(()) => println!(
+                    "        verdict pass: {} ({:.0}ms)",
+                    check.id,
+                    elapsed.as_secs_f64() * 1000.0
+                ),
+                Err(error) => println!(
+                    "        verdict fail: {} ({:.0}ms): {error}",
+                    check.id,
+                    elapsed.as_secs_f64() * 1000.0
+                ),
             }
         }
         results.push((check, outcome));
@@ -1727,9 +1758,9 @@ fn outcome_verdict(
 ///
 /// A refresh indicator exists both before and after its button is activated.
 /// Waiting for that node to paint therefore returned immediately, even when
-/// its backend read was still running. Provider discovery can legitimately
-/// take seven seconds on a clean macOS runner, so keep sampling the exact
-/// verdict for ten seconds and return the last snapshot for a precise failure.
+/// its backend read was still running. QA is an interactive contract: a result
+/// that cannot paint inside one second is reported as slow rather than making
+/// every later check wait behind it.
 async fn settle_for_outcome(
     client: &mut Client,
     check: &qa::Check,
@@ -1737,7 +1768,7 @@ async fn settle_for_outcome(
     action_target: Option<&str>,
     action_node_id: Option<u64>,
 ) -> Result<AgentSnapshot> {
-    const OUTCOME_TIMEOUT: Duration = Duration::from_secs(10);
+    const OUTCOME_TIMEOUT: Duration = Duration::from_millis(900);
     let deadline = tokio::time::Instant::now() + OUTCOME_TIMEOUT;
     loop {
         let (after, _) = inspect(client).await?;
@@ -1746,7 +1777,7 @@ async fn settle_for_outcome(
         {
             return Ok(after);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -1783,64 +1814,6 @@ async fn click_by_id(client: &mut Client, node_id: u64) -> Result<()> {
         .await?;
     if let DebugResponse::Error(error) = answer.response {
         bail!("{} ({})", error.message, error.code);
-    }
-    Ok(())
-}
-
-/// Wait until the tree stops changing, rather than guessing how long to sleep.
-///
-/// A fixed settle is wrong in both directions: too short and a working control
-/// reads as dead because its result had not painted when the snapshot was
-/// taken, too long and every check pays for the slowest one. The rename editor
-/// was still failing at 1200ms while the state *after* the run showed it open,
-/// which is the failure this removes.
-///
-/// Two consecutive identical reads, because one is not enough: an action that
-/// clears before it fills reports a stable tree in the gap between.
-async fn settle(client: &mut Client, want: Option<&str>) -> Result<()> {
-    /*
-     * Wait for the *subject* where there is one, not for the tree.
-     *
-     * A whole-tree count is stable while a single node is mid-open, so it
-     * returned early and the check read a screen the action had not reached
-     * yet: measured immediately after a failing run, the rename editor was
-     * painting at 650x23 while the check had just reported it absent.
-     */
-    if let Some(subject) = want {
-        let (role, name) = subject.split_once(':').unwrap_or(("", subject));
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let (snapshot, _) = inspect(client).await?;
-            let painted = snapshot.nodes.iter().any(|n| {
-                (role.is_empty() || n.role == role)
-                    && n.name.contains(name)
-                    && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
-            });
-            if painted {
-                return Ok(());
-            }
-        }
-        return Ok(());
-    }
-    let mut last = 0usize;
-    let mut stable = 0;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let (snapshot, _) = inspect(client).await?;
-        let now = snapshot
-            .nodes
-            .iter()
-            .filter(|n| n.visible && n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
-            .count();
-        if now == last {
-            stable += 1;
-            if stable == 2 {
-                return Ok(());
-            }
-        } else {
-            stable = 0;
-            last = now;
-        }
     }
     Ok(())
 }
@@ -2242,7 +2215,7 @@ async fn locate_control(
                     delta_y,
                 }))
                 .await?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
         latest = settled;
     }
@@ -4528,6 +4501,7 @@ async fn main() -> Result<()> {
             checks,
             max_seconds,
         } => {
+            client.set_request_timeout(Duration::from_millis(900));
             let result = tokio::time::timeout(
                 Duration::from_secs(max_seconds),
                 run_cover(
@@ -4554,6 +4528,7 @@ async fn main() -> Result<()> {
             }
         }
         cli::Command::Qa { selector, checks } => {
+            client.set_request_timeout(Duration::from_millis(900));
             let failed = run_qa(&mut client, selector.as_deref(), checks.as_deref()).await?;
             if failed > 0 {
                 std::process::exit(1);

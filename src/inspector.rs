@@ -165,6 +165,7 @@ fn read_descriptor(path: &Path) -> Result<Descriptor> {
 pub struct Client {
     stream: Box<dyn MessageStream>,
     next_id: i64,
+    request_timeout: Duration,
 }
 
 impl Client {
@@ -175,7 +176,17 @@ impl Client {
         Ok(Self {
             stream: Box::new(TransportStream::new(framed_json(stream))),
             next_id: 0,
+            request_timeout: REQUEST_TIMEOUT,
         })
+    }
+
+    /// Bound every inspector exchange for a latency-sensitive command.
+    ///
+    /// Interactive dump/diagnostic modes retain the generous default. QA and
+    /// coverage explicitly lower it so a dead action cannot multiply a
+    /// minute-long transport wait across a suite.
+    pub fn set_request_timeout(&mut self, request_timeout: Duration) {
+        self.request_timeout = request_timeout;
     }
 
     fn next_id(&mut self) -> JsonRpcId {
@@ -194,9 +205,14 @@ impl Client {
             .await
             .map_err(|error| eyre!("sending to the inspector failed: {error}"))?;
         loop {
-            let message = timeout(REQUEST_TIMEOUT, self.stream.recv())
+            let message = timeout(self.request_timeout, self.stream.recv())
                 .await
-                .map_err(|_| eyre!("the inspector did not answer within {REQUEST_TIMEOUT:?}"))?
+                .map_err(|_| {
+                    eyre!(
+                        "the inspector did not answer within {:?}",
+                        self.request_timeout
+                    )
+                })?
                 .ok_or_else(|| eyre!("the inspector closed the connection"))?
                 .map_err(|error| eyre!("reading from the inspector failed: {error}"))?;
             if response_id(&message).as_ref() == Some(id) {
