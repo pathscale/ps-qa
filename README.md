@@ -70,6 +70,7 @@ ps-qa qa                         # run them all
 ps-qa qa dialog                  # one group
 ps-qa qa dialog-cancel-dismisses # one check, by id
 ps-qa inventory                  # fast reachability counts on every surface
+ps-qa inventory --require-outcomes # fail every reachable control with no named verdict
 ```
 
 `list` needs no running app. Everything else does. Exit code is 1 if any check

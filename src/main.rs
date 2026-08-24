@@ -2660,7 +2660,53 @@ fn inventory_class(node: &SemanticNode, manual: bool, isolated: bool) -> Invento
     }
 }
 
-async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize> {
+/// Whether a selector from an outcome check addresses this exact semantic
+/// control shape.
+///
+/// `role:name` is the precise spelling used by checks when a button and the
+/// field it opens share a name. Everything else follows the same substring or
+/// glob matching as the live driver, so coverage cannot claim a selector the
+/// runner itself would never resolve.
+fn selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
+    if let Some((role, name)) = selector.split_once(':')
+        && role == node.role
+    {
+        return name_matches(&node.name, name);
+    }
+    name_matches(&node.name, selector)
+}
+
+/// Named outcomes that drive or assert this control.
+///
+/// A navigation opener and a hover are actions too: their check fails when
+/// the control cannot perform them. `subject` and `compare` are observed
+/// outcomes. Merely appearing in the inventory is intentionally absent here.
+fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|check| {
+            [
+                check.open.as_deref(),
+                check.hover.as_deref(),
+                check.click.as_deref(),
+                check.type_into.as_deref(),
+                check.key_on.as_deref(),
+                check.compare.as_deref(),
+                Some(check.subject.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|selector| selector_matches_node(node, selector))
+        })
+        .map(|check| check.id.clone())
+        .collect()
+}
+
+async fn run_inventory(
+    client: &mut Client,
+    only: Option<&str>,
+    require_outcomes: bool,
+) -> Result<usize> {
     #[derive(serde::Serialize)]
     struct SurfaceRow {
         surface: String,
@@ -2672,6 +2718,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         disabled: usize,
         manual: usize,
         isolated: usize,
+        outcome_declared: usize,
         unverified: usize,
         sections_opened: usize,
         rows_hovered: usize,
@@ -2685,6 +2732,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         name: String,
         classification: String,
         reason: String,
+        checks: Vec<String>,
     }
 
     #[derive(serde::Serialize)]
@@ -2697,6 +2745,8 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         disabled: usize,
         manual: usize,
         isolated: usize,
+        outcome_declared: usize,
+        unverified: usize,
     }
 
     #[derive(serde::Serialize)]
@@ -2708,15 +2758,21 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         disabled: usize,
         manual: usize,
         isolated: usize,
+        outcome_declared: usize,
         unverified: usize,
         surfaces: Vec<SurfaceRow>,
         roles: Vec<RoleRow>,
         controls: Vec<ControlRow>,
     }
 
+    let checks = if std::path::Path::new("tests/ps-qa").is_dir() {
+        qa::checks(None).map_err(eyre::Report::msg)?
+    } else {
+        Vec::new()
+    };
     let mut rows = Vec::new();
     let mut controls = Vec::new();
-    let mut role_counts: std::collections::BTreeMap<String, [usize; 7]> =
+    let mut role_counts: std::collections::BTreeMap<String, [usize; 9]> =
         std::collections::BTreeMap::new();
     for surface in reach::surfaces() {
         if only.is_some_and(|want| want != surface.name) {
@@ -2733,6 +2789,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 disabled: 0,
                 manual: 0,
                 isolated: 0,
+                outcome_declared: 0,
                 unverified: 0,
                 sections_opened: 0,
                 rows_hovered: 0,
@@ -2752,6 +2809,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 disabled: 0,
                 manual: 0,
                 isolated: 0,
+                outcome_declared: 0,
                 unverified: 0,
                 sections_opened,
                 rows_hovered: 0,
@@ -2785,8 +2843,32 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         let disabled = count(InventoryClass::Disabled);
         let manual = count(InventoryClass::Manual);
         let isolated = count(InventoryClass::Isolated);
-        let unverified = reachable + isolated;
-        for node in &components {
+        let declared: Vec<Vec<String>> = components
+            .iter()
+            .map(|node| outcome_check_ids(node, &checks))
+            .collect();
+        let outcome_declared = classes
+            .iter()
+            .zip(&declared)
+            .filter(|(class, matches)| {
+                matches!(class, InventoryClass::Reachable | InventoryClass::Disabled)
+                    && !matches.is_empty()
+            })
+            .count();
+        let unverified = classes
+            .iter()
+            .zip(&declared)
+            .filter(|(class, matches)| match class {
+                InventoryClass::Reachable | InventoryClass::Disabled => matches.is_empty(),
+                // These must run in disposable processes; declaration in the
+                // shared suite cannot turn them green.
+                InventoryClass::Isolated => true,
+                InventoryClass::Manual
+                | InventoryClass::Anonymous
+                | InventoryClass::Unreachable => false,
+            })
+            .count();
+        for (node, matched_checks) in components.iter().zip(&declared) {
             let manual = reach::requires_manual_release_check(&node.name);
             let isolated = reach::requires_isolated_outcome(&node.name);
             let class = inventory_class(node, manual, isolated);
@@ -2800,6 +2882,19 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 InventoryClass::Manual => counts[5] += 1,
                 InventoryClass::Isolated => counts[6] += 1,
             }
+            if !matched_checks.is_empty() {
+                counts[7] += 1;
+            }
+            let is_unverified = match class {
+                InventoryClass::Reachable | InventoryClass::Disabled => matched_checks.is_empty(),
+                InventoryClass::Isolated => true,
+                InventoryClass::Manual
+                | InventoryClass::Anonymous
+                | InventoryClass::Unreachable => false,
+            };
+            if is_unverified {
+                counts[8] += 1;
+            }
             let (classification, reason) = match class {
                 InventoryClass::Manual => ("excluded-manual", "native-dialog-or-external"),
                 InventoryClass::Isolated => (
@@ -2809,8 +2904,16 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 InventoryClass::Anonymous => ("failed-anonymous", "no accessible name"),
                 InventoryClass::Unreachable if !node.visible => ("failed-reachability", "hidden"),
                 InventoryClass::Unreachable => ("failed-reachability", "no-box"),
-                InventoryClass::Disabled => ("state-disabled", "disabled in current state"),
-                InventoryClass::Reachable => ("reachable-unverified", "no outcome check matched"),
+                InventoryClass::Disabled if matched_checks.is_empty() => {
+                    ("state-disabled-unverified", "no outcome check matched")
+                }
+                InventoryClass::Disabled => {
+                    ("outcome-declared-disabled", "matched named outcome check")
+                }
+                InventoryClass::Reachable if matched_checks.is_empty() => {
+                    ("reachable-unverified", "no outcome check matched")
+                }
+                InventoryClass::Reachable => ("outcome-declared", "matched named outcome check"),
             };
             controls.push(ControlRow {
                 surface: surface.name.clone(),
@@ -2819,6 +2922,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 name: node.name.clone(),
                 classification: classification.to_owned(),
                 reason: reason.to_owned(),
+                checks: matched_checks.clone(),
             });
         }
         rows.push(SurfaceRow {
@@ -2831,6 +2935,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
             disabled,
             manual,
             isolated,
+            outcome_declared,
             unverified,
             sections_opened,
             rows_hovered,
@@ -2845,6 +2950,7 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
         disabled: rows.iter().map(|row| row.disabled).sum(),
         manual: rows.iter().map(|row| row.manual).sum(),
         isolated: rows.iter().map(|row| row.isolated).sum(),
+        outcome_declared: rows.iter().map(|row| row.outcome_declared).sum(),
         unverified: rows.iter().map(|row| row.unverified).sum(),
         surfaces: rows,
         roles: role_counts
@@ -2858,11 +2964,14 @@ async fn run_inventory(client: &mut Client, only: Option<&str>) -> Result<usize>
                 disabled: counts[4],
                 manual: counts[5],
                 isolated: counts[6],
+                outcome_declared: counts[7],
+                unverified: counts[8],
             })
             .collect(),
         controls,
     };
-    let failures = report.unreachable + report.anonymous;
+    let failures =
+        report.unreachable + report.anonymous + usize::from(require_outcomes) * report.unverified;
     println!(
         "{}",
         toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
@@ -3987,8 +4096,11 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        cli::Command::Inventory { surface } => {
-            let failures = run_inventory(&mut client, surface.as_deref()).await?;
+        cli::Command::Inventory {
+            surface,
+            require_outcomes,
+        } => {
+            let failures = run_inventory(&mut client, surface.as_deref(), require_outcomes).await?;
             if failures > 0 {
                 std::process::exit(1);
             }
@@ -4103,7 +4215,10 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InventoryClass, inventory_class, name_matches};
+    use super::{
+        InventoryClass, inventory_class, name_matches, outcome_check_ids, selector_matches_node,
+    };
+    use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
 
     fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
@@ -4146,6 +4261,48 @@ mod tests {
             inventory_class(&component("Synchronize", true, true), false, false),
             InventoryClass::Reachable
         );
+    }
+
+    fn check(id: &str, click: Option<&str>, subject: &str) -> Check {
+        Check {
+            id: id.into(),
+            group: "coverage".into(),
+            what: "a rendered outcome".into(),
+            open: None,
+            hover: None,
+            click: click.map(str::to_owned),
+            type_into: None,
+            text: None,
+            key: None,
+            key_on: None,
+            compare: None,
+            press: false,
+            subject: subject.into(),
+            expect: Expect::Paints,
+        }
+    }
+
+    #[test]
+    fn role_qualified_coverage_does_not_credit_a_same_named_wrong_role() {
+        let button = component("Rename project", true, true);
+        assert!(!selector_matches_node(&button, "textbox:Rename project"));
+
+        let mut textbox = button.clone();
+        textbox.role = "textbox".into();
+        assert!(selector_matches_node(&textbox, "textbox:Rename project"));
+    }
+
+    #[test]
+    fn outcome_coverage_names_the_checks_that_drive_or_assert_a_control() {
+        let checks = [
+            check("rename", Some("Rename"), "textbox:Rename project"),
+            check("save", Some("Save"), "Saved"),
+        ];
+        assert_eq!(
+            outcome_check_ids(&component("Rename project", true, true), &checks),
+            vec!["rename"]
+        );
+        assert!(outcome_check_ids(&component("Delete project", true, true), &checks).is_empty());
     }
 
     /// A bare word is a substring, because that is how a control is recalled.

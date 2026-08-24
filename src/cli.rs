@@ -339,15 +339,19 @@ pub enum Command {
         surface: Option<String>,
     },
 
-    /// Count reachable, unreachable, anonymous and manual controls on every
-    /// surface without activating ordinary controls.
+    /// Count reachable, unreachable, anonymous, manual and outcome-declared
+    /// controls on every surface without activating ordinary controls.
     ///
     /// Navigation, section expansion and row hover use semantic node ids. This
-    /// is the fast answer to "what can an agent reach?"; use `cover` when the
-    /// outcome of pressing every eligible control is actually required.
+    /// is the fast answer to "what can an agent reach?". Add
+    /// `--require-outcomes` to make missing named verdicts fail CI; use `cover`
+    /// when the generic effect of pressing every eligible control is required.
     Inventory {
         /// Restrict to one surface.
         surface: Option<String>,
+        /// Fail when a reachable control has no named outcome check.
+        #[arg(long)]
+        require_outcomes: bool,
     },
 
     /// Drive every control named by the checks and judge what the renderer did
