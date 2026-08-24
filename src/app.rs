@@ -30,6 +30,7 @@
 //!     navigation_controls: ["Open Preferences"],
 //!     sections: ["Records", "Activity"],
 //!     document_row_markers: [" open \u{b7} "],
+//!     document_openers: ["QA document"],
 //!     close_prefixes: ["Close "],
 //!     dismiss_controls: ["Leave dialog"],
 //!     row_action_prefixes: ["Rename "],
@@ -127,6 +128,12 @@ pub struct AppProfile {
     /// that summary instead - a count, an age, a path. An application that
     /// ships none simply has no row fallback.
     pub document_row_markers: Vec<String>,
+    /// Exact semantic names that open a dynamic document in this QA profile.
+    ///
+    /// Unlike row markers these are deterministic fixture data. Declaring
+    /// them lets an outcome suite recognize that it is already on the same
+    /// document instead of returning Home and reopening it before every check.
+    pub document_openers: Vec<String>,
     /// Prefixes of controls that close a surface, e.g. `Close `.
     ///
     /// These retire the pane everything else stands on, so they are swept last.
@@ -316,6 +323,7 @@ mod tests {
             isolated_controls: vec!["Restart application".to_owned()],
             inert_controls: vec!["Synchronize".to_owned()],
             document_row_markers: vec![" open · ".to_owned()],
+            document_openers: vec!["QA document".to_owned()],
             close_prefixes: vec!["Close ".to_owned()],
             dismiss_controls: vec!["Leave dialog".to_owned()],
             row_action_prefixes: vec!["Rename ".to_owned()],
@@ -330,6 +338,7 @@ mod tests {
         assert_eq!(back.surfaces.len(), 1);
         assert_eq!(back.sections, vec!["Records".to_owned()]);
         assert_eq!(back.transcript_region.as_deref(), Some("Message history"));
+        assert_eq!(back.document_openers, vec!["QA document".to_owned()]);
         assert!(back.dismisses_dialog("leave dialog"));
     }
 }
