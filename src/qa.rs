@@ -374,8 +374,8 @@ pub fn verdict(
                 .take(3)
                 .map(|node| {
                     format!(
-                        "id={} enabled={} bounds={:?}",
-                        node.id, node.enabled, node.bounds
+                        "id={} role={:?} name={:?} enabled={} bounds={:?}",
+                        node.id, node.role, node.name, node.enabled, node.bounds
                     )
                 })
                 .collect::<Vec<_>>();
@@ -394,8 +394,8 @@ pub fn verdict(
                 .take(3)
                 .map(|node| {
                     format!(
-                        "id={} enabled={} bounds={:?}",
-                        node.id, node.enabled, node.bounds
+                        "id={} role={:?} name={:?} enabled={} bounds={:?}",
+                        node.id, node.role, node.name, node.enabled, node.bounds
                     )
                 })
                 .collect::<Vec<_>>();
