@@ -1586,7 +1586,10 @@ async fn run_qa(
         }
 
         let action_error = open_error.or(click_error);
-        let after = if action_error.is_none() {
+        let transport_timed_out = action_error
+            .as_deref()
+            .is_some_and(|error| error.contains("inspector did not answer within"));
+        let after = if action_error.is_none() || transport_timed_out {
             settle_for_outcome(
                 client,
                 check,
@@ -1599,6 +1602,14 @@ async fn run_qa(
             inspect(client).await?.0
         };
         let outcome = match action_error {
+            Some(error) if transport_timed_out => outcome_verdict(
+                check,
+                &before.nodes,
+                &after.nodes,
+                action_target.as_deref(),
+                action_node_id,
+            )
+            .map_err(|outcome| format!("{error}; rendered outcome also failed: {outcome}")),
             Some(error) => Err(error),
             None => outcome_verdict(
                 check,
