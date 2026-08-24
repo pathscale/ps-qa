@@ -2882,6 +2882,10 @@ fn is_pagination_control(node: &SemanticNode, scope: &HashSet<u64>, patterns: &[
             .any(|pattern| name_matches(&node.name, pattern))
 }
 
+fn pagination_identity_advanced(previous_name: &str, current: &SemanticNode) -> bool {
+    current.name != previous_name
+}
+
 async fn materialize_paginated_content(
     client: &mut Client,
     surface: &reach::Surface,
@@ -2891,19 +2895,20 @@ async fn materialize_paginated_content(
         return Ok(0);
     }
     let mut revealed = 0;
+    let mut retired_pagers = HashSet::new();
     for _ in 0..32 {
         let (tree, _) = inspect(client).await?;
         let scope: HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
             .collect();
-        let target = tree
-            .nodes
-            .iter()
-            .find(|node| is_pagination_control(node, &scope, patterns));
+        let target = tree.nodes.iter().find(|node| {
+            !retired_pagers.contains(&node.id) && is_pagination_control(node, &scope, patterns)
+        });
         let Some(target) = target else {
             return Ok(revealed);
         };
         let node_id = target.id;
+        let mut pager_name = target.name.clone();
         client
             .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
                 node_id,
@@ -2929,12 +2934,23 @@ async fn materialize_paginated_content(
             let after_scope: HashSet<u64> = reach::on_surface_subtree(&after.nodes, surface)
                 .into_iter()
                 .collect();
-            let still_present = after.nodes.iter().any(|node| {
+            let still_present = after.nodes.iter().find(|node| {
                 node.id == node_id && is_pagination_control(node, &after_scope, patterns)
             });
-            if !still_present {
-                removed = true;
-                break;
+            match still_present {
+                Some(current) if pagination_identity_advanced(&pager_name, current) => {
+                    pager_name.clone_from(&current.name);
+                }
+                _ => {
+                    // A reveal-more control must expose semantic progress.
+                    // Blitz can retain the removed DOM node for one or more
+                    // snapshots, including its old geometry and visible bit;
+                    // repeatedly activating that unchanged identity is a no-op
+                    // loop. Retire it and scan for the next real pager.
+                    retired_pagers.insert(node_id);
+                    removed = true;
+                    break;
+                }
             }
         }
         if !removed {
@@ -4771,8 +4787,8 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         InventoryClass, exact_selector_matches_node, inventory_class, is_pagination_control,
-        name_matches, outcome_check_ids, outcome_verdict, painted_named, retain_exact_candidates,
-        saved_controls, selector_matches_node,
+        name_matches, outcome_check_ids, outcome_verdict, pagination_identity_advanced,
+        painted_named, retain_exact_candidates, saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4833,6 +4849,18 @@ mod tests {
             &component("Show 5 more projects", true, false),
             &scope,
             &patterns
+        ));
+    }
+
+    #[test]
+    fn an_unchanged_pager_identity_is_not_activated_twice() {
+        assert!(!pagination_identity_advanced(
+            "Show 5 more projects",
+            &component("Show 5 more projects", true, true)
+        ));
+        assert!(pagination_identity_advanced(
+            "Show 5 more projects",
+            &component("Show 3 more projects", true, true)
         ));
     }
 
