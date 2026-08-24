@@ -2702,7 +2702,14 @@ async fn reveal_deferred_content(
     surface: &reach::Surface,
     want: &str,
 ) -> Result<usize> {
-    let mut previous = None;
+    if let Some(field) = surface.reveal_with.as_deref() {
+        type_text(client, field, "ps-qa reveal deferred content").await?;
+        type_text(client, field, "").await?;
+        let (snapshot, _) = inspect(client).await?;
+        if painted_named(&snapshot.nodes, want) {
+            return Ok(2);
+        }
+    }
     for step in 0..8 {
         let (snapshot, _) = inspect(client).await?;
         if painted_named(&snapshot.nodes, want) {
@@ -2728,10 +2735,6 @@ async fn reveal_deferred_content(
         else {
             return Ok(step);
         };
-        if previous == Some(target.0) && step > 0 {
-            return Ok(step);
-        }
-        previous = Some(target.0);
         client
             .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
                 node_id: target.0,

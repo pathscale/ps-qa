@@ -71,6 +71,12 @@ pub struct SurfaceSpec {
     /// scope coverage to its semantic subtree.
     #[serde(default)]
     pub marker: Option<String>,
+    /// A text field whose query causes this surface to mount deferred rows.
+    ///
+    /// ps-qa writes a temporary query and clears it immediately. The
+    /// application owns both the field name and the reveal policy.
+    #[serde(default)]
+    pub reveal_with: Option<String>,
 }
 
 /// A control reserved for the manual release pass, and what it opens.
@@ -299,6 +305,7 @@ mod tests {
                 name: "dashboard".to_owned(),
                 opener: "Dashboard".to_owned(),
                 marker: Some("Overview heading".to_owned()),
+                reveal_with: Some("Search dashboard".to_owned()),
             }],
             permanent_surfaces: vec!["Dashboard".to_owned()],
             navigation_controls: vec!["Open Preferences".to_owned()],
