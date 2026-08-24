@@ -2098,7 +2098,6 @@ async fn locate_control(
             // report `visible=false` while retaining a real painted box; the
             // QA verdict uses the same rule. Truly hidden retained nodes are
             // still rejected below because their box is 0x0.
-            .filter(|n| n.enabled)
             .filter_map(|node| {
                 node.bounds
                     .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
@@ -2111,6 +2110,10 @@ async fn locate_control(
         // applied. `Restart` then selected visible `Restart AgencyProxy`
         // instead of scrolling the exact control into view.
         retain_exact_candidates(&mut candidates, want);
+        // Preserve exact-name priority even when the exact control is
+        // disabled. Filtering it first let a longer enabled substring steal
+        // the action (`Send` became “Parse … before sending”).
+        candidates.retain(|(node, _)| node.enabled);
 
         // Prefer the modal in front, then the active surface, then global
         // chrome. Retained panes can keep enabled, painted controls with the
@@ -4687,7 +4690,7 @@ mod tests {
 
     #[test]
     fn exact_name_priority_does_not_choose_a_longer_substring() {
-        let restart = component("Restart", true, true);
+        let restart = component("Restart", false, true);
         let proxy = component("Restart AgencyProxy", true, true);
 
         assert!(exact_selector_matches_node(&restart, "Restart"));
@@ -4702,6 +4705,7 @@ mod tests {
         retain_exact_candidates(&mut candidates, "button:Restart");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0.name, "Restart");
+        assert!(!candidates[0].0.enabled);
     }
 
     #[test]
