@@ -235,7 +235,11 @@ pub fn judge(case: &Case, before: &[SemanticNode], after: &[SemanticNode]) -> Op
             let controls = |nodes: &[SemanticNode]| {
                 let mut rows: Vec<(String, bool)> = nodes
                     .iter()
-                    .filter(|node| node.role == "button")
+                    // Copy controls commonly replace their own label with
+                    // "Copied" for a moment. That is success feedback, not a
+                    // document mutation; changes to every neighbouring
+                    // control remain part of the comparison.
+                    .filter(|node| node.role == "button" && node.id != case.id)
                     .map(|node| (node.name.clone(), node.enabled))
                     .collect();
                 rows.sort();
@@ -423,6 +427,24 @@ mod tests {
         };
         let tree = vec![button(name), button("Neighbour")];
         assert!(judge(&case, &tree, &tree).is_none());
+    }
+
+    #[test]
+    fn copy_feedback_on_the_activated_control_is_not_a_document_change() {
+        let case = Case {
+            id: 1,
+            name: "Copy session id".to_owned(),
+            family: "copy",
+            expect: expectation_for("Copy session id", false),
+        };
+        let mut copy = button("Copy session id");
+        copy.id = case.id;
+        let neighbour = button("Neighbour");
+        let before = vec![copy.clone(), neighbour.clone()];
+        copy.name = "Copied session id".to_owned();
+        let after = vec![copy, neighbour];
+
+        assert_eq!(judge(&case, &before, &after), None);
     }
 
     #[test]
