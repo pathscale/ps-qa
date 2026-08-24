@@ -1291,18 +1291,13 @@ async fn type_text(client: &mut Client, want: &str, text: &str) -> Result<u64> {
 /// so taffy lays out in one pass everything the tab retained while hidden. That
 /// is a different cost from typing and needs its own measurement.
 async fn click_named(client: &mut Client, want: &str) -> Result<()> {
+    let (target_id, _) = locate_control(client, want, &[]).await?;
     let (snapshot, _) = inspect(client).await?;
-    let wanted = want.to_lowercase();
-    let Some(target) = snapshot
+    let target = snapshot
         .nodes
         .iter()
-        .find(|node| node.name.to_lowercase().contains(&wanted) && node.visible && node.enabled)
-    else {
-        bail!(
-            "no visible, enabled node whose name contains {}",
-            report::py_repr(want)
-        );
-    };
+        .find(|node| node.id == target_id)
+        .ok_or_else(|| eyre!("node {target_id} disappeared after it was located"))?;
     println!(
         "clicking node {} role={} name={}",
         target.id,
@@ -1314,20 +1309,6 @@ async fn click_named(client: &mut Client, want: &str) -> Result<()> {
     // of the viewport gets a `pointerdown` at a point nothing is at and no
     // click at all. "Show 12 earlier messages" sat at y=-2246 and every attempt
     // to press it read as the button doing nothing.
-    let offscreen = target
-        .bounds
-        .is_some_and(|b| b[1] + b[3] < 0.0 || b[0] + b[2] < 0.0);
-    let target_id = target.id;
-    if offscreen {
-        println!("  offscreen, scrolling it into view first");
-        client
-            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                node_id: target_id,
-            }))
-            .await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
-
     let before = metrics(client).await?;
     let started = Instant::now();
     client
@@ -2079,7 +2060,6 @@ async fn locate_control(
     want: &str,
     roles: &[&str],
 ) -> Result<(u64, [f64; 4])> {
-    let wanted = want.to_lowercase();
     /*
      * An on-screen match wins over an earlier off-screen one.
      *
@@ -2103,13 +2083,13 @@ async fn locate_control(
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let candidates: Vec<_> = snapshot
+        let mut candidates: Vec<_> = snapshot
             .nodes
             .iter()
             .filter(|n| {
                 roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
             })
-            .filter(|n| n.name.to_lowercase().contains(&wanted))
+            .filter(|n| selector_matches_node(n, want))
             // Geometry is authoritative here. Some renderer-backed controls
             // report `visible=false` while retaining a real painted box; the
             // QA verdict uses the same rule. Truly hidden retained nodes are
@@ -2121,6 +2101,10 @@ async fn locate_control(
                     .map(|bounds| (node, bounds))
             })
             .collect();
+        // An explicit accessible name wins over a broader substring. Without
+        // this, `Restart` selected `Restart AgencyProxy` simply because that
+        // longer label appeared first in the tree.
+        candidates.sort_by_key(|(node, _)| !exact_selector_matches_node(node, want));
 
         // Prefer the modal in front, then the active surface, then global
         // chrome. Retained panes can keep enabled, painted controls with the
@@ -2914,6 +2898,13 @@ fn selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
         return name_matches(&node.name, name);
     }
     name_matches(&node.name, selector)
+}
+
+fn exact_selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
+    if let Some((role, name)) = selector.split_once(':') {
+        return role == node.role && node.name.eq_ignore_ascii_case(name);
+    }
+    node.name.eq_ignore_ascii_case(selector)
 }
 
 /// Named outcomes that drive or assert this control.
@@ -4595,8 +4586,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, inventory_class, name_matches, outcome_check_ids, outcome_verdict,
-        painted_named, saved_controls, selector_matches_node,
+        InventoryClass, exact_selector_matches_node, inventory_class, name_matches,
+        outcome_check_ids, outcome_verdict, painted_named, saved_controls, selector_matches_node,
     };
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
@@ -4671,6 +4662,17 @@ mod tests {
         let mut textbox = button.clone();
         textbox.role = "textbox".into();
         assert!(selector_matches_node(&textbox, "textbox:Rename project"));
+    }
+
+    #[test]
+    fn exact_name_priority_does_not_choose_a_longer_substring() {
+        let restart = component("Restart", true, true);
+        let proxy = component("Restart AgencyProxy", true, true);
+
+        assert!(exact_selector_matches_node(&restart, "Restart"));
+        assert!(!exact_selector_matches_node(&proxy, "Restart"));
+        assert!(exact_selector_matches_node(&restart, "button:Restart"));
+        assert!(!exact_selector_matches_node(&restart, "switch:Restart"));
     }
 
     #[test]
