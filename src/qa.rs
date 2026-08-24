@@ -271,7 +271,14 @@ pub fn checks(dir: Option<&std::path::Path>) -> Result<Vec<Check>, String> {
 fn matching<'a>(nodes: &'a [SemanticNode], want: &str) -> Vec<&'a SemanticNode> {
     nodes
         .iter()
-        .filter(|node| node.name.contains(want) || node.role.contains(want))
+        .filter(|node| {
+            if let Some((role, name)) = want.split_once(':') {
+                return node.role.eq_ignore_ascii_case(role)
+                    && node.name.to_lowercase().contains(&name.to_lowercase());
+            }
+            node.name.to_lowercase().contains(&want.to_lowercase())
+                || node.role.to_lowercase().contains(&want.to_lowercase())
+        })
         .collect()
 }
 
@@ -896,5 +903,26 @@ mod tests {
         assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 20.0, 20.0]))]).is_ok());
         assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 20.0, 20.0]))]).is_err());
         assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 0.0, 0.0]))]).is_err());
+    }
+
+    #[test]
+    fn verdict_subjects_honor_role_qualified_names() {
+        let mut check = parse("");
+        check.subject = "button:Send".into();
+        check.expect = Expect::Disabled;
+        let node = |role: &str| SemanticNode {
+            id: 7,
+            parent: None,
+            role: role.into(),
+            name: "Send".into(),
+            value: None,
+            enabled: false,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 20.0, 20.0]),
+        };
+
+        assert!(verdict(&check, &[], &[node("button")]).is_ok());
+        assert!(verdict(&check, &[], &[node("textbox")]).is_err());
     }
 }
