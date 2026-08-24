@@ -60,6 +60,12 @@ pub enum Expect {
     /// Use this for validation flows where entering a valid value unlocks a
     /// Save or Send control without changing its geometry.
     Enabled,
+    /// A painted named node refuses input after the action.
+    ///
+    /// This is the observable completion state for actions such as clearing a
+    /// saved value: the control remains visible, but cannot be invoked again
+    /// until there is something new to act on.
+    Disabled,
     /// No node matching the name exists.
     ///
     /// The assertion for a control that must *not* be reachable, and for
@@ -347,6 +353,26 @@ pub fn verdict(
                 .collect::<Vec<_>>();
             return Err(format!(
                 "no painted, enabled node matching {:?} ({})",
+                check.subject,
+                states.join(", ")
+            ));
+        }
+        Expect::Disabled => {
+            if found.iter().any(|node| paints(node) && !node.enabled) {
+                return Ok(());
+            }
+            let states = found
+                .iter()
+                .take(3)
+                .map(|node| {
+                    format!(
+                        "id={} enabled={} bounds={:?}",
+                        node.id, node.enabled, node.bounds
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "no painted, disabled node matching {:?} ({})",
                 check.subject,
                 states.join(", ")
             ));
@@ -711,5 +737,10 @@ mod tests {
         assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 20.0, 20.0]))]).is_ok());
         assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 20.0, 20.0]))]).is_err());
         assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 0.0, 0.0]))]).is_err());
+
+        check.expect = Expect::Disabled;
+        assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 20.0, 20.0]))]).is_ok());
+        assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 20.0, 20.0]))]).is_err());
+        assert!(verdict(&check, &[], &[node(false, Some([0.0, 0.0, 0.0, 0.0]))]).is_err());
     }
 }
