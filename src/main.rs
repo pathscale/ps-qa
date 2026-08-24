@@ -2876,7 +2876,8 @@ async fn materialize_paginated_content(
     if patterns.is_empty() {
         return Ok(0);
     }
-    for revealed in 0..128 {
+    let mut revealed = 0;
+    for _ in 0..32 {
         let (tree, _) = inspect(client).await?;
         let scope: HashSet<u64> = reach::on_surface_subtree(&tree.nodes, surface)
             .into_iter()
@@ -2895,15 +2896,30 @@ async fn materialize_paginated_content(
         let Some(target) = target else {
             return Ok(revealed);
         };
+        let node_id = target.id;
         client
             .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                node_id: target.id,
+                node_id,
             }))
             .await?;
-        click_by_id(client, target.id).await?;
-        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        // A pager keeps its semantic identity while only its remaining count
+        // changes. Reuse that id until the final activation removes it instead
+        // of serializing the entire tree after every five-row page.
+        let mut removed = false;
+        for _ in 0..128 {
+            if click_by_id(client, node_id).await.is_err() {
+                removed = true;
+                break;
+            }
+            revealed += 1;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if !removed {
+            bail!("pagination node {node_id} did not disappear after 128 activations");
+        }
     }
-    bail!("pagination did not terminate after 128 semantic activations")
+    bail!("pagination controls did not terminate after 32 semantic identities")
 }
 
 /// Hover every row on the surface, so hover-revealed controls enter the tree.
