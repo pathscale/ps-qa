@@ -798,6 +798,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds,
+            slot: None,
         }
     }
 

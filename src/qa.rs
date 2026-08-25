@@ -847,6 +847,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([0.0, 0.0, 100.0, 20.0]),
+            slot: None,
         };
 
         assert!(verdict(&check, &[node(7, "0")], &[node(7, "1")]).is_ok());
@@ -878,6 +879,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
+            slot: None,
         };
         let mut after = before.clone();
         after.selected = true;
@@ -911,6 +913,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([0.0, 0.0, 100.0, 20.0]),
+            slot: None,
         };
 
         assert!(name_changed(7, &[node(7, "Refreshed 1")], &[node(7, "Refreshed 2")]).is_ok());
@@ -941,6 +944,7 @@ mod tests {
             visible: bounds.is_some(),
             selected: false,
             bounds,
+            slot: None,
         };
         let error = verdict(
             &check,
@@ -969,6 +973,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([x, y, 20.0, 20.0]),
+            slot: None,
         };
 
         assert!(verdict(&check, &[], &[node(1, 10.0, 10.0), node(2, 40.0, 10.0)]).is_ok());
@@ -992,6 +997,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds,
+            slot: None,
         };
 
         assert!(verdict(&check, &[], &[node(true, Some([0.0, 0.0, 20.0, 20.0]))]).is_ok());
@@ -1019,6 +1025,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
+            slot: None,
         };
 
         assert!(verdict(&check, &[], &[node("button")]).is_ok());
