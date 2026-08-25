@@ -293,6 +293,17 @@ fn matching<'a>(nodes: &'a [SemanticNode], want: &str) -> Vec<&'a SemanticNode> 
     nodes
         .iter()
         .filter(|node| {
+            /*
+             * `@slot` addresses the part a component library named, rather than
+             * the text the part happens to carry. A trigger and the thing it
+             * opens routinely share an accessible name - an in-place editor
+             * labels both `Rename <subject>` - so a check written against the
+             * name is satisfied by whichever of them paints, which is the
+             * trigger, whether or not activating it did anything.
+             */
+            if let Some(slot) = want.strip_prefix('@') {
+                return node.slot.as_deref().is_some_and(|have| have == slot);
+            }
             if let Some((role, name)) = want.split_once(':') {
                 return node.role.eq_ignore_ascii_case(role)
                     && node.name.to_lowercase().contains(&name.to_lowercase());
