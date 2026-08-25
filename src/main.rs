@@ -4916,6 +4916,7 @@ mod tests {
             visible,
             selected: false,
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
+            slot: None,
         }
     }
 

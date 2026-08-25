@@ -357,6 +357,7 @@ mod tests {
             visible: true,
             selected: false,
             bounds: Some([0.0, 0.0, 10.0, 10.0]),
+            slot: None,
         }
     }
 
