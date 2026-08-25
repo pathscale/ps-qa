@@ -1559,11 +1559,16 @@ async fn run_qa(
         // so hovering by name alone can land in the wrong list.
         if let Some(want) = check.hover.as_deref() {
             let (tree, _) = inspect(client).await?;
+            // Through the shared matcher, so hover understands `role:name` and
+            // `@slot` like every other step. It matched `node.name` raw, so a
+            // selector carrying a role prefix could never resolve: no node is
+            // named "button:Change the status of ...", and the check failed
+            // with "no visible, sized node" while `find` returned the control.
             let target = tree
                 .nodes
                 .iter()
                 .find(|node| {
-                    node.name.contains(want)
+                    selector_matches_node(node, want)
                         && node.visible
                         && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
                 })
