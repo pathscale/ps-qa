@@ -226,6 +226,13 @@ pub struct Check {
     /// intend to test hit-testing.
     #[serde(default)]
     pub press: bool,
+    /// Optional unmeasured quiet window after this verdict.
+    ///
+    /// Use this only when an application paints optimistically and then begins
+    /// durable work that temporarily occupies its control transport. The
+    /// rendered action still has to pass the one-second budget.
+    #[serde(default)]
+    pub settle_after_ms: u64,
     /// The node the assertion is about.
     pub subject: String,
     pub expect: Expect,
@@ -784,13 +791,14 @@ mod tests {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
              key:Some(\"Enter\"),compare:Some(\"older\"),\
-             covers:[\"button:Save row \"],",
+             covers:[\"button:Save row \"],settle_after_ms:1200,",
         );
         assert_eq!(check.type_into.as_deref(), Some("New record"));
         assert_eq!(check.text.as_deref(), Some("latest fixture"));
         assert_eq!(check.key.as_deref(), Some("Enter"));
         assert_eq!(check.compare.as_deref(), Some("older"));
         assert_eq!(check.covers, ["button:Save row "]);
+        assert_eq!(check.settle_after_ms, 1200);
         assert_eq!(
             action_description(&check),
             "activate \"Save\", type \"latest fixture\" into \"New record\", key \"Enter\" on \"New record\""
@@ -814,6 +822,7 @@ mod tests {
             compare: None,
             covers: Vec::new(),
             press: false,
+            settle_after_ms: 0,
             subject: "Output level".into(),
             expect: Expect::ValueChanges,
         };

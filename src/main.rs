@@ -1720,6 +1720,9 @@ async fn run_qa(
             }
         }
         results.push((check, outcome));
+        if check.settle_after_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(check.settle_after_ms)).await;
+        }
     }
 
     let failed = results.iter().filter(|(_, out)| out.is_err()).count();
@@ -4990,6 +4993,7 @@ mod tests {
             compare: None,
             covers: Vec::new(),
             press: false,
+            settle_after_ms: 0,
             subject: subject.into(),
             expect: Expect::Paints,
         }
