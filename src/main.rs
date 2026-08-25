@@ -1592,7 +1592,16 @@ async fn run_qa(
             if let Err(error) = click_named_quiet(client, want).await {
                 open_error = Some(format!("could not prepare {want:?}: {error}"));
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            if let Some(next) = check
+                .click
+                .as_deref()
+                .or(check.type_into.as_deref())
+                .or(check.key_on.as_deref())
+            {
+                let _ = wait_for_arrival(client, None, next).await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
         }
 
         // Hover can mount the action that the check will drive. Capture the
