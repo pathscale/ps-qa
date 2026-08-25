@@ -771,12 +771,19 @@ async fn dom(client: &mut Client, want: &str, depth: usize) -> Result<()> {
             .map(|b| format!("[{:.0},{:.0} {:.0}x{:.0}]", b[0], b[1], b[2], b[3]))
             .unwrap_or_else(|| "[no box]".into());
         format!(
-            "{} {:<10} {:<28} {bounds}{}\n      attrs: {}",
+            "{} {:<10} {:<28} {bounds}{}\n      {}",
             node.id,
             node.role,
             format!("{:?}", node.name),
             if node.visible { "" } else { "  HIDDEN" },
-            node.value.as_deref().unwrap_or("(none)")
+            // The library part this element is, then its value. The column used
+            // to be labelled `attrs` and carry only the value, which reads as
+            // "this element has no attributes" for every node in the tree.
+            format!(
+                "slot={} value={}",
+                node.slot.as_deref().unwrap_or("-"),
+                node.value.as_deref().unwrap_or("-")
+            )
         )
     };
 
@@ -1984,7 +1991,13 @@ async fn find(
         .nodes
         .iter()
         .filter(|node| roles.is_empty() || roles.iter().any(|role| role == &node.role))
-        .filter(|node| name_matches(&node.name, pattern))
+        // `@slot` addresses the part the library named rather than the text it
+        // carries, so a trigger and the thing it opens are distinguishable even
+        // though they share an accessible name.
+        .filter(|node| match pattern.strip_prefix('@') {
+            Some(slot) => node.slot.as_deref().is_some_and(|have| have == slot),
+            None => name_matches(&node.name, pattern),
+        })
         .filter(|node| !visible || node.visible)
         .filter(|node| !hidden || !node.visible)
         .filter(|node| !disabled || !node.enabled)
@@ -3230,6 +3243,7 @@ fn reconcile_inventory(
             visible: !control.classification.contains("unreachable"),
             selected: false,
             bounds: Some([0.0, 0.0, 1.0, 1.0]),
+            slot: None,
         };
         let matched = outcome_check_ids(&node, &checks);
         if control.classification == "excluded-manual" {
