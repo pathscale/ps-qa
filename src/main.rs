@@ -3122,7 +3122,20 @@ fn inventory_class(node: &SemanticNode, manual: bool, isolated: bool) -> Invento
 /// field it opens share a name. Everything else follows the same substring or
 /// glob matching as the live driver, so coverage cannot claim a selector the
 /// runner itself would never resolve.
+/// The library part this selector names, if it names one.
+///
+/// `@inline-edit-field` addresses the slot rather than the text, which is what
+/// separates a trigger from the thing it opens: those routinely share an
+/// accessible name, so a selector written against the name reaches whichever
+/// paints and never the other.
+fn selector_slot(selector: &str) -> Option<&str> {
+    selector.strip_prefix('@')
+}
+
 fn selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
+    if let Some(slot) = selector_slot(selector) {
+        return node.slot.as_deref() == Some(slot);
+    }
     if let Some((role, name)) = selector.split_once(':')
         && role == node.role
     {
@@ -3132,6 +3145,10 @@ fn selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
 }
 
 fn exact_selector_matches_node(node: &SemanticNode, selector: &str) -> bool {
+    // A slot is already exact: there is no substring reading of it to narrow.
+    if let Some(slot) = selector_slot(selector) {
+        return node.slot.as_deref() == Some(slot);
+    }
     if let Some((role, name)) = selector.split_once(':') {
         return role == node.role && node.name.eq_ignore_ascii_case(name);
     }
