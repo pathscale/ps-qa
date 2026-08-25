@@ -1438,21 +1438,33 @@ async fn run_qa(
         let mut open_error = None;
         if let Some(want) = check.open.as_deref() {
             /*
-             * "Already there" is judged by the *click target*, not the subject.
+             * A permanent surface marker can answer "already there". A
+             * document marker cannot: every document renders the same
+             * composer, so `Send` only proves that some document is in front.
              *
-             * Judged by the subject, a check can decide it arrived because a
-             * different surface renders the same word, skip the
-             * navigation, and then could not find the control it was about.
-             * The control the check is going to drive is the honest test of
-             * whether the surface is in front.
+             * Named documents are activated every time. Activating an already
+             * active tab is idempotent, and is safer than probing a check
+             * target that may legitimately be collapsed, deferred, or mounted
+             * only after hover.
              */
             let want_here: &str = check.click.as_deref().unwrap_or(&check.subject);
             let destination = surface_for_opener(want);
+            let named_document = is_named_document_opener(want);
             let (here, _) = inspect(client).await?;
-            let arrived = destination.map_or_else(
-                || painted_named(&here.nodes, want_here),
-                |surface| reach::on_surface(&here.nodes, surface),
-            );
+            let arrived =
+                arrived_without_navigation(&here.nodes, destination, want_here, named_document);
+            if cli::trace() {
+                let surface = reach::surfaces()
+                    .iter()
+                    .find(|surface| reach::on_surface(&here.nodes, surface))
+                    .map(|surface| surface.name.as_str())
+                    .unwrap_or("none");
+                println!(
+                    "        arrival want={want:?} destination={} target={want_here:?} \
+                     named_document={named_document} arrived={arrived} on_surface={surface}",
+                    destination.map_or("dynamic", |surface| surface.name.as_str()),
+                );
+            }
             if !arrived {
                 /*
                  * Two steps, because the opener may not be on this surface.
@@ -1472,7 +1484,7 @@ async fn run_qa(
                  * navigating, while a single row click may fold it, so
                  * committing to either gesture broke the other set of checks.
                  */
-                let first_click = click_named_quiet(client, want).await;
+                let first_click = click_opener_quiet(client, want, named_document).await;
                 let mut there = wait_for_arrival(client, destination, want_here).await?;
                 // A surface transition can briefly remove the opener before
                 // its replacement paints. Retry the same semantic click after
@@ -1634,14 +1646,7 @@ async fn run_qa(
             }
             if check.expect == qa::Expect::TargetPaints && !check.press {
                 let (tree, _) = inspect(client).await?;
-                let wanted = want.to_lowercase();
-                action_target = tree
-                    .nodes
-                    .iter()
-                    .find(|node| {
-                        node.name.to_lowercase().contains(&wanted) && node.visible && node.enabled
-                    })
-                    .map(|node| node.name.clone());
+                action_target = resolved_action_target(&tree.nodes, want);
             }
             let driven = drive_check_action(client, want, check.press).await;
             action_error = driven.as_ref().err().cloned();
@@ -1877,6 +1882,58 @@ fn surface_for_opener(want: &str) -> Option<&'static reach::Surface> {
                 })
                 .flatten()
         })
+}
+
+/// Whether an opener names one document among several instances of a surface.
+///
+/// A surface marker distinguishes Settings from Home, but cannot distinguish
+/// one project from another. The application's profile owns the stable fixture
+/// names, so it also owns this classification.
+fn is_named_document_opener(want: &str) -> bool {
+    named_document_opener_for(reach::profile(), want)
+}
+
+fn named_document_opener_for(profile: &crate::app::AppProfile, want: &str) -> bool {
+    profile
+        .document_openers
+        .iter()
+        .any(|opener| opener.eq_ignore_ascii_case(want))
+}
+
+fn arrived_without_navigation(
+    nodes: &[SemanticNode],
+    destination: Option<&reach::Surface>,
+    want_here: &str,
+    named_document: bool,
+) -> bool {
+    !named_document
+        && destination.map_or_else(
+            || painted_named(nodes, want_here),
+            |surface| reach::on_surface(nodes, surface),
+        )
+}
+
+/// Activate a surface opener without confusing a document tab for its Close
+/// button.
+///
+/// A tab's accessible name is the document label doubled. Prefer that exact
+/// role-qualified selector, then fall back to the ordinary opener so a profile
+/// with no open tab can still use its Home row.
+async fn click_opener_quiet(client: &mut Client, want: &str, named_document: bool) -> Result<u64> {
+    if named_document {
+        let tab = format!("button:{want}{want}");
+        if let Ok(node_id) = click_named_quiet(client, &tab).await {
+            return Ok(node_id);
+        }
+    }
+    click_named_quiet(client, want).await
+}
+
+fn resolved_action_target(nodes: &[SemanticNode], want: &str) -> Option<String> {
+    nodes
+        .iter()
+        .find(|node| selector_matches_node(node, want) && node.visible && node.enabled)
+        .map(|node| node.name.clone())
 }
 
 /// Whether a named check target currently occupies a box in the live tree.
@@ -4916,10 +4973,12 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, exact_selector_matches_node, inventory_class, is_pagination_control,
-        name_matches, outcome_check_ids, outcome_verdict, pagination_advanced, painted_named,
+        InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
+        is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
+        outcome_verdict, pagination_advanced, painted_named, resolved_action_target,
         retain_exact_candidates, saved_controls, selector_matches_node,
     };
+    use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
     use blitz_control_protocol::SemanticNode;
     use std::collections::HashSet;
@@ -5098,6 +5157,51 @@ mod tests {
             std::slice::from_ref(&textbox),
             "textbox:Rename project"
         ));
+    }
+
+    #[test]
+    fn only_profile_declared_documents_require_exact_activation() {
+        let profile = AppProfile {
+            document_openers: vec!["Fixture project".into()],
+            ..AppProfile::default()
+        };
+
+        assert!(named_document_opener_for(&profile, "fixture PROJECT"));
+        assert!(!named_document_opener_for(&profile, "Settings"));
+    }
+
+    #[test]
+    fn a_generic_document_marker_never_skips_named_document_activation() {
+        let project = SurfaceSpec {
+            name: "project".into(),
+            opener: crate::reach::DYNAMIC_DOCUMENT.into(),
+            marker: Some("Send".into()),
+            reveal_with: None,
+        };
+        let nodes = [component("Send", true, true)];
+
+        assert!(!arrived_without_navigation(
+            &nodes,
+            Some(&project),
+            "fixture row",
+            true,
+        ));
+        assert!(arrived_without_navigation(
+            &nodes,
+            Some(&project),
+            "fixture row",
+            false,
+        ));
+    }
+
+    #[test]
+    fn target_paints_resolves_a_role_qualified_click_selector() {
+        let status = component("Change the status of fixture item", true, true);
+
+        assert_eq!(
+            resolved_action_target(&[status], "button:Change the status of fixture item"),
+            Some("Change the status of fixture item".into()),
+        );
     }
 
     #[test]
