@@ -770,20 +770,17 @@ async fn dom(client: &mut Client, want: &str, depth: usize) -> Result<()> {
             .bounds
             .map(|b| format!("[{:.0},{:.0} {:.0}x{:.0}]", b[0], b[1], b[2], b[3]))
             .unwrap_or_else(|| "[no box]".into());
+        // The library part this element is, then its value. The second line
+        // used to be labelled `attrs` and carry only the value, which reads as
+        // "this element has no attributes" for every node in the tree.
+        let slot = node.slot.as_deref().unwrap_or("-");
+        let value = node.value.as_deref().unwrap_or("-");
+        let name = format!("{:?}", node.name);
         format!(
-            "{} {:<10} {:<28} {bounds}{}\n      {}",
+            "{} {:<10} {name:<28} {bounds}{}\n      slot={slot} value={value}",
             node.id,
             node.role,
-            format!("{:?}", node.name),
             if node.visible { "" } else { "  HIDDEN" },
-            // The library part this element is, then its value. The column used
-            // to be labelled `attrs` and carry only the value, which reads as
-            // "this element has no attributes" for every node in the tree.
-            format!(
-                "slot={} value={}",
-                node.slot.as_deref().unwrap_or("-"),
-                node.value.as_deref().unwrap_or("-")
-            )
         )
     };
 
