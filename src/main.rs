@@ -1569,7 +1569,9 @@ async fn run_qa(
         // Aimed at a node inside the panel column, not merely one whose name
         // matches. Another retained surface may render the same control names,
         // so hovering by name alone can land in the wrong list.
-        if let Some(want) = check.hover.as_deref() {
+        if open_error.is_none()
+            && let Some(want) = check.hover.as_deref()
+        {
             let (tree, _) = inspect(client).await?;
             // Through the shared matcher, so hover understands `role:name` and
             // `@slot` like every other step. It matched `node.name` raw, so a
@@ -1585,21 +1587,24 @@ async fn run_qa(
                         && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
                 })
                 .map(|node| node.id);
-            let Some(node_id) = target else {
-                bail!("no visible, sized node matching {want:?} to hover");
-            };
-            client
-                .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                    node_id,
-                }))
-                .await?;
-            client
-                .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
-                .await?;
-            if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
-                let _ = wait_for_arrival(client, None, next).await?;
+            if let Some(node_id) = target {
+                client
+                    .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                        node_id,
+                    }))
+                    .await?;
+                client
+                    .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+                    .await?;
+                if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
+                    let _ = wait_for_arrival(client, None, next).await?;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
             } else {
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                open_error = Some(format!(
+                    "could not hover {want:?}: no visible, sized matching node"
+                ));
             }
         }
 
