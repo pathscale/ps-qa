@@ -1554,7 +1554,6 @@ async fn run_qa(
         }
 
         client.set_request_timeout(Duration::from_millis(900));
-        let check_started = Instant::now();
 
         // Hover first: the row actions do not exist until `pointerenter`.
         //
@@ -1594,6 +1593,9 @@ async fn run_qa(
         // baseline afterward: inspecting before hover both omitted that real
         // pre-action state and paid for an immediately discarded snapshot.
         let (before, _) = inspect(client).await?;
+        let mut check_started =
+            (check.click.is_none() && check.text.is_none() && check.key.is_none())
+                .then(Instant::now);
 
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
@@ -1603,6 +1605,9 @@ async fn run_qa(
         if action_error.is_none()
             && let Some(want) = check.click.as_deref()
         {
+            if check.text.is_none() && check.key.is_none() {
+                check_started = Some(Instant::now());
+            }
             if check.expect == qa::Expect::TargetPaints && !check.press {
                 let (tree, _) = inspect(client).await?;
                 let wanted = want.to_lowercase();
@@ -1625,6 +1630,9 @@ async fn run_qa(
         if action_error.is_none()
             && let Some(text) = check.text.as_deref()
         {
+            if check.key.is_none() {
+                check_started = Some(Instant::now());
+            }
             if let Some(field) = check.type_into.as_deref() {
                 match type_text(client, field, text).await {
                     Ok(node_id) => action_node_id = Some(node_id),
@@ -1639,6 +1647,7 @@ async fn run_qa(
         if action_error.is_none()
             && let Some(key) = check.key.as_deref()
         {
+            check_started = Some(Instant::now());
             let target = check
                 .key_on
                 .as_deref()
@@ -1681,7 +1690,11 @@ async fn run_qa(
                 action_node_id,
             ),
         };
-        let elapsed = check_started.elapsed();
+        // Preparation is not the outcome latency. Opening an editor, hovering
+        // its row, and filling a field establish the precondition; the final
+        // click, value commit, or key is the user action whose rendered result
+        // must arrive inside one second.
+        let elapsed = check_started.unwrap_or_else(Instant::now).elapsed();
         if elapsed > Duration::from_secs(1) {
             let timing = format!(
                 "check exceeded 1000ms ({:.0}ms)",
