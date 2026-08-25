@@ -1500,15 +1500,6 @@ async fn run_qa(
             // acknowledgements such as "Copied".
         }
 
-        if open_error.is_none()
-            && let Some(want) = check.prepare.as_deref()
-        {
-            if let Err(error) = click_named_quiet(client, want).await {
-                open_error = Some(format!("could not prepare {want:?}: {error}"));
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
         /*
          * A check must be independent of whichever disclosure a previous
          * check left closed. The application profile already identifies its
@@ -1519,35 +1510,37 @@ async fn run_qa(
          * collapse/expand round trips: an `Expand …` action remains available
          * after the preceding check closed its section and is not pre-empted.
          */
-        let action_target = check
-            .click
+        let setup_target = check
+            .hover
             .as_deref()
+            .or(check.prepare.as_deref())
+            .or(check.click.as_deref())
             .or(check.type_into.as_deref())
             .or(check.key_on.as_deref())
             .unwrap_or(&check.subject);
         let (current, _) = inspect(client).await?;
-        if !painted_named(&current.nodes, action_target)
+        if !painted_named(&current.nodes, setup_target)
             && let Some(surface) = reach::surfaces()
                 .iter()
                 .find(|surface| reach::on_surface(&current.nodes, surface))
         {
             let opened = expand_everything(client, surface).await?;
             if cli::trace() && opened > 0 {
-                println!("        opened {opened} collapsed section(s) for {action_target:?}");
+                println!("        opened {opened} collapsed section(s) for {setup_target:?}");
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         let (expanded, _) = inspect(client).await?;
-        if !painted_named(&expanded.nodes, action_target)
+        if !painted_named(&expanded.nodes, setup_target)
             && let Some(surface) = reach::surfaces()
                 .iter()
                 .find(|surface| reach::on_surface(&expanded.nodes, surface))
         {
-            let reveals = reveal_deferred_content(client, surface, action_target).await?;
+            let reveals = reveal_deferred_content(client, surface, setup_target).await?;
             if cli::trace() && reveals > 0 {
                 println!(
-                    "        revealed deferred content for {action_target:?} in {reveals} step(s)"
+                    "        revealed deferred content for {setup_target:?} in {reveals} step(s)"
                 );
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1582,11 +1575,24 @@ async fn run_qa(
             client
                 .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
                 .await?;
-            if let Some(action) = check.click.as_deref() {
-                let _ = wait_for_arrival(client, None, action).await?;
+            if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
+                let _ = wait_for_arrival(client, None, next).await?;
             } else {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
+        }
+
+        // Preparation may itself be a hover-mounted control (for example a
+        // row action that opens a dialog). Hover must therefore happen first;
+        // the baseline remains after both setup actions so only the declared
+        // outcome is measured.
+        if open_error.is_none()
+            && let Some(want) = check.prepare.as_deref()
+        {
+            if let Err(error) = click_named_quiet(client, want).await {
+                open_error = Some(format!("could not prepare {want:?}: {error}"));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         // Hover can mount the action that the check will drive. Capture the
