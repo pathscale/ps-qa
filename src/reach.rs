@@ -190,23 +190,24 @@ pub fn reveal_chain(nodes: &[SemanticNode], target: u64) -> Vec<u64> {
 /// a switch or menu item from a generic element with an explicit ARIA role;
 /// omitting those would make a component audit silently button-only.
 pub fn interactive(node: &SemanticNode) -> bool {
-    matches!(
-        node.role.as_str(),
-        "button"
-            | "checkbox"
-            | "combobox"
-            | "link"
-            | "menuitem"
-            | "menuitemcheckbox"
-            | "menuitemradio"
-            | "radio"
-            | "slider"
-            | "spinbutton"
-            | "switch"
-            | "tab"
-            | "textbox"
-            | "treeitem"
-    )
+    (node.role == "option" && node.visible)
+        || matches!(
+            node.role.as_str(),
+            "button"
+                | "checkbox"
+                | "combobox"
+                | "link"
+                | "menuitem"
+                | "menuitemcheckbox"
+                | "menuitemradio"
+                | "radio"
+                | "slider"
+                | "spinbutton"
+                | "switch"
+                | "tab"
+                | "textbox"
+                | "treeitem"
+        )
 }
 
 /// Whether pressing this leaves the surface, invalidating the rest of the plan.
@@ -848,16 +849,17 @@ mod tests {
             "Not interactive",
             Some([0.0, 0.0, 20.0, 20.0])
         )));
-        // A native option is a value operated through its combobox. When that
-        // combobox is closed the renderer retains every option as a hidden
-        // semantic node; counting those as independently reachable controls
-        // reports a working native selector as a row of broken widgets.
-        assert!(!interactive(&node(
+        // A visible custom option is directly operable. Closed native
+        // selectors retain hidden options, which stay outside inventory.
+        assert!(interactive(&node(
             3,
             "option",
             "Choice",
             Some([0.0, 0.0, 20.0, 20.0])
         )));
+        let mut hidden_option = node(4, "option", "Retained choice", Some([0.0, 0.0, 20.0, 20.0]));
+        hidden_option.visible = false;
+        assert!(!interactive(&hidden_option));
     }
 
     #[test]
