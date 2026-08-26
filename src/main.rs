@@ -2002,8 +2002,21 @@ async fn click_opener_quiet(client: &mut Client, want: &str, named_document: boo
 fn resolved_action_target(nodes: &[SemanticNode], want: &str) -> Option<String> {
     nodes
         .iter()
-        .find(|node| selector_matches_node(node, want) && node.visible && node.enabled)
+        .find(|node| {
+            selector_matches_node(node, want)
+                && node.enabled
+                && painted_bounds(node).is_some()
+        })
         .map(|node| node.name.clone())
+}
+
+/// The renderer's painted box is the native source of truth for whether a
+/// semantic node can be targeted. Blitz can report `visible = false` for a
+/// frame after a control is already painted; retained hidden controls instead
+/// collapse to a zero-sized box.
+fn painted_bounds(node: &SemanticNode) -> Option<[f64; 4]> {
+    node.bounds
+        .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
 }
 
 /// Whether a named check target currently occupies a box in the live tree.
@@ -2015,9 +2028,7 @@ fn painted_named(nodes: &[SemanticNode], want: &str) -> bool {
     nodes.iter().any(|node| {
         (role.is_empty() || node.role == role)
             && node.name.contains(name)
-            && node
-                .bounds
-                .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+            && painted_bounds(node).is_some()
     })
 }
 
@@ -2305,16 +2316,10 @@ async fn locate_control(
                 roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
             })
             .filter(|n| selector_matches_node(n, want))
-            // An action must satisfy the inspector's own interactability gate.
-            // Retained panes can keep a non-zero stale box while reporting the
-            // node hidden; choosing that copy reaches `notInteractable` even
-            // when a visible replacement exists on the active surface.
-            .filter(|node| node.visible)
-            .filter_map(|node| {
-                node.bounds
-                    .filter(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-                    .map(|bounds| (node, bounds))
-            })
+            // Native paint geometry is authoritative. Blitz can lag the
+            // semantic `visible` flag after mounting a menu item, while a
+            // retained hidden control has a zero-sized box and is rejected.
+            .filter_map(|node| painted_bounds(node).map(|bounds| (node, bounds)))
             .collect();
         // An explicit accessible name excludes broader substring matches.
         // Sorting is not strong enough here: an on-screen substring can still
@@ -2326,6 +2331,9 @@ async fn locate_control(
         // disabled. Filtering it first let a longer enabled substring steal
         // the action (`Send` became “Parse … before sending”).
         candidates.retain(|(node, _)| node.enabled);
+        // When both copies are painted, prefer the one whose semantic flag has
+        // caught up. A lagging false value remains a valid fallback.
+        candidates.sort_by_key(|(node, _)| !node.visible);
 
         // Prefer the modal in front, then the active surface, then global
         // chrome. Retained panes can keep enabled, painted controls with the
@@ -5045,7 +5053,7 @@ mod tests {
     use super::{
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
         is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
-        outcome_verdict, pagination_advanced, painted_named, parse_key_chord,
+        outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
         resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
         stable_arrival,
     };
@@ -5256,6 +5264,30 @@ mod tests {
             std::slice::from_ref(&textbox),
             "textbox:Rename project"
         ));
+    }
+
+    #[test]
+    fn painted_actionability_ignores_lagging_visibility_but_rejects_zero_size() {
+        let mut mounted_menu_item = component("Opus", true, false);
+        assert_eq!(painted_bounds(&mounted_menu_item), mounted_menu_item.bounds);
+        assert_eq!(
+            resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
+            None,
+            "the fixture role has not yet been made a menuitem",
+        );
+
+        mounted_menu_item.role = "menuitem".into();
+        assert_eq!(
+            resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
+            Some("Opus".into()),
+        );
+
+        mounted_menu_item.bounds = Some([0.0, 0.0, 0.0, 0.0]);
+        assert!(painted_bounds(&mounted_menu_item).is_none());
+        assert_eq!(
+            resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
+            None,
+        );
     }
 
     #[test]
