@@ -195,6 +195,13 @@ pub struct Check {
     /// activate another and require its selected state to change.
     #[serde(default)]
     pub prepare: Option<String>,
+    /// Use a real pointer press for [`prepare`](Self::prepare).
+    ///
+    /// Focus-sensitive popovers can legitimately distinguish a human press
+    /// from a bare semantic activation. Keep this separate from `press`, since
+    /// the prepared trigger and measured action may have different roles.
+    #[serde(default)]
+    pub prepare_press: bool,
     /// Hover this node first, if the control is revealed on hover.
     pub hover: Option<String>,
     /// Click this node, if the check is about an action.
@@ -731,7 +738,12 @@ fn action_description(check: &Check) -> String {
         (None, None, _) => "observe only".to_owned(),
     };
     if let Some(prepare) = check.prepare.as_deref() {
-        action = format!("prepare {prepare:?}, {action}");
+        let verb = if check.prepare_press {
+            "prepare-press"
+        } else {
+            "prepare"
+        };
+        action = format!("{verb} {prepare:?}, {action}");
     }
     if let Some(field) = check.type_into.as_deref() {
         let typed = check.text.as_deref().map_or_else(
@@ -798,6 +810,17 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_prepare_with_a_real_pointer_without_changing_the_action_mode() {
+        let check = parse("prepare:Some(\"Draft\"),prepare_press:true,");
+        assert!(check.prepare_press);
+        assert!(!check.press);
+        assert_eq!(
+            action_description(&check),
+            "prepare-press \"Draft\", activate \"Save\""
+        );
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -824,6 +847,7 @@ mod tests {
             what: "the slider moves".into(),
             open: None,
             prepare: None,
+            prepare_press: false,
             hover: None,
             click: None,
             type_into: None,
