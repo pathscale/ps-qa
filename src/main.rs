@@ -1372,17 +1372,35 @@ async fn wait_for_arrival(
     want_here: &str,
 ) -> Result<bool> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
+    let mut painted_streak = 0;
     loop {
         let (tree, _) = inspect(client).await?;
         let arrived = destination.map_or_else(
             || painted_named(&tree.nodes, want_here),
             |surface| reach::on_surface(&tree.nodes, surface),
         );
-        if arrived || tokio::time::Instant::now() >= deadline {
-            return Ok(arrived);
+        if stable_arrival(&mut painted_streak, arrived) {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// A newly mounted overlay or hover action can paint for one renderer snapshot,
+/// reconcile, and immediately receive a different node id. Treating that first
+/// frame as ready races the actual action against the remount. Three consecutive
+/// painted snapshots cost only 50ms in the stable case and prove the control a
+/// user sees is still present when the harness drives it.
+fn stable_arrival(painted_streak: &mut u8, arrived: bool) -> bool {
+    if arrived {
+        *painted_streak = painted_streak.saturating_add(1);
+    } else {
+        *painted_streak = 0;
+    }
+    *painted_streak >= 3
 }
 
 /// Drive every panel check and report what the renderer did.
@@ -5029,6 +5047,7 @@ mod tests {
         is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
         outcome_verdict, pagination_advanced, painted_named, parse_key_chord,
         resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
+        stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -5048,6 +5067,16 @@ mod tests {
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
             slot: None,
         }
+    }
+
+    #[test]
+    fn arrival_requires_three_consecutive_painted_snapshots() {
+        let mut streak = 0;
+        assert!(!stable_arrival(&mut streak, true));
+        assert!(!stable_arrival(&mut streak, false));
+        assert!(!stable_arrival(&mut streak, true));
+        assert!(!stable_arrival(&mut streak, true));
+        assert!(stable_arrival(&mut streak, true));
     }
 
     #[test]
