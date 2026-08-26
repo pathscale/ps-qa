@@ -202,6 +202,13 @@ pub struct Check {
     /// the prepared trigger and measured action may have different roles.
     #[serde(default)]
     pub prepare_press: bool,
+    /// Send this key to [`prepare`](Self::prepare) instead of activating it.
+    ///
+    /// This keeps focus-sensitive controls self-contained: a select check can
+    /// open its listbox with the component's authored keyboard contract, then
+    /// measure an option selection without depending on an earlier check.
+    #[serde(default)]
+    pub prepare_key: Option<String>,
     /// Hover this node first, if the control is revealed on hover.
     pub hover: Option<String>,
     /// Click this node, if the check is about an action.
@@ -738,12 +745,14 @@ fn action_description(check: &Check) -> String {
         (None, None, _) => "observe only".to_owned(),
     };
     if let Some(prepare) = check.prepare.as_deref() {
-        let verb = if check.prepare_press {
-            "prepare-press"
+        let preparation = if let Some(key) = check.prepare_key.as_deref() {
+            format!("prepare-key {key:?} on {prepare:?}")
+        } else if check.prepare_press {
+            format!("prepare-press {prepare:?}")
         } else {
-            "prepare"
+            format!("prepare {prepare:?}")
         };
-        action = format!("{verb} {prepare:?}, {action}");
+        action = format!("{preparation}, {action}");
     }
     if let Some(field) = check.type_into.as_deref() {
         let typed = check.text.as_deref().map_or_else(
@@ -821,6 +830,17 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_prepare_with_a_key_without_changing_the_measured_action() {
+        let check = parse("prepare:Some(\"Menu\"),prepare_key:Some(\"ArrowDown\"),");
+        assert_eq!(check.prepare_key.as_deref(), Some("ArrowDown"));
+        assert!(!check.press);
+        assert_eq!(
+            action_description(&check),
+            "prepare-key \"ArrowDown\" on \"Menu\", activate \"Save\""
+        );
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -848,6 +868,7 @@ mod tests {
             open: None,
             prepare: None,
             prepare_press: false,
+            prepare_key: None,
             hover: None,
             click: None,
             type_into: None,
