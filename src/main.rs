@@ -1615,7 +1615,9 @@ async fn run_qa(
         if open_error.is_none()
             && let Some(want) = check.prepare.as_deref()
         {
-            let prepared = if check.prepare_press {
+            let prepared = if let Some(key) = check.prepare_key.as_deref() {
+                press_key(client, key, 1, want, true).await.map(|_| ())
+            } else if check.prepare_press {
                 press_named(client, want).await
             } else {
                 click_named_quiet(client, want).await.map(|_| ())
@@ -5103,6 +5105,7 @@ mod tests {
             open: None,
             prepare: None,
             prepare_press: false,
+            prepare_key: None,
             hover: None,
             click: click.map(str::to_owned),
             type_into: None,
