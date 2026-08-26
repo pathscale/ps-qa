@@ -1615,7 +1615,12 @@ async fn run_qa(
         if open_error.is_none()
             && let Some(want) = check.prepare.as_deref()
         {
-            if let Err(error) = click_named_quiet(client, want).await {
+            let prepared = if check.prepare_press {
+                press_named(client, want).await
+            } else {
+                click_named_quiet(client, want).await.map(|_| ())
+            };
+            if let Err(error) = prepared {
                 open_error = Some(format!("could not prepare {want:?}: {error}"));
             }
             if let Some(next) = check
@@ -5097,6 +5102,7 @@ mod tests {
             what: "a rendered outcome".into(),
             open: None,
             prepare: None,
+            prepare_press: false,
             hover: None,
             click: click.map(str::to_owned),
             type_into: None,
