@@ -1174,9 +1174,60 @@ async fn press_key(
         println!("no visible node named {over:?}; sending {name} to whatever has focus");
     }
 
-    // `key` and `code` are both what the DOM calls them. They are not
-    // interchangeable and sending the wrong one is a silent no-op.
-    let (key, code) = match name.to_ascii_lowercase().as_str() {
+    let (key, code, modifiers) = parse_key_chord(name)?;
+
+    for _ in 0..count {
+        for phase in [KeyPhase::Down, KeyPhase::Up] {
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::Input(
+                    InputCommand::Key {
+                        phase,
+                        key: key.clone(),
+                        code: code.clone(),
+                        modifiers,
+                    },
+                )))
+                .await?;
+        }
+        sleep_pace().await;
+    }
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    Ok(())
+}
+
+/// Parse the same compact chord a person would write in a QA manifest.
+///
+/// `key` and `code` are both what the DOM calls them. They are not
+/// interchangeable and sending the wrong one is a silent no-op. Modifiers
+/// belong on both phases of the key event, so the application sees the actual
+/// shortcut rather than a plain character that merely resembles it.
+fn parse_key_chord(name: &str) -> Result<(String, String, Modifiers)> {
+    let mut parts = name
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .peekable();
+    let mut modifiers = Modifiers::default();
+    let mut key_name = None;
+
+    while let Some(part) = parts.next() {
+        let lower = part.to_ascii_lowercase();
+        let is_last = parts.peek().is_none();
+        if is_last {
+            key_name = Some(lower);
+            break;
+        }
+        match lower.as_str() {
+            "meta" | "cmd" | "command" => modifiers.meta = true,
+            "ctrl" | "control" => modifiers.control = true,
+            "alt" | "option" => modifiers.alt = true,
+            "shift" => modifiers.shift = true,
+            other => bail!("unknown key modifier {other:?}: meta, cmd, ctrl, alt, shift"),
+        }
+    }
+
+    let key_name = key_name.ok_or_else(|| eyre!("key chord is empty"))?;
+    let (key, code) = match key_name.as_str() {
         "pageup" | "pgup" => ("PageUp", "PageUp"),
         "pagedown" | "pgdn" => ("PageDown", "PageDown"),
         "home" => ("Home", "Home"),
@@ -1188,30 +1239,15 @@ async fn press_key(
         "tab" => ("Tab", "Tab"),
         "enter" => ("Enter", "Enter"),
         "escape" | "esc" => ("Escape", "Escape"),
+        "1" => ("1", "Digit1"),
+        "2" => ("2", "Digit2"),
         other => {
             bail!(
-                "unknown key {other:?}: pageup, pagedown, home, end, up, down, left, right, tab, enter, escape"
+                "unknown key {other:?}: 1, 2, pageup, pagedown, home, end, up, down, left, right, tab, enter, escape"
             )
         }
     };
-
-    for _ in 0..count {
-        for phase in [KeyPhase::Down, KeyPhase::Up] {
-            client
-                .agent(&AgentControlRequest::Act(AgentAction::Input(
-                    InputCommand::Key {
-                        phase,
-                        key: key.to_string(),
-                        code: code.to_string(),
-                        modifiers: Modifiers::default(),
-                    },
-                )))
-                .await?;
-        }
-        sleep_pace().await;
-    }
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    Ok(())
+    Ok((key.to_owned(), code.to_owned(), modifiers))
 }
 
 async fn type_keys(client: &mut Client, count: usize, want: &str) -> Result<()> {
@@ -4987,8 +5023,8 @@ mod tests {
     use super::{
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
         is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
-        outcome_verdict, pagination_advanced, painted_named, resolved_action_target,
-        retain_exact_candidates, saved_controls, selector_matches_node,
+        outcome_verdict, pagination_advanced, painted_named, parse_key_chord,
+        resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -5008,6 +5044,22 @@ mod tests {
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
             slot: None,
         }
+    }
+
+    #[test]
+    fn key_chords_preserve_dom_key_code_and_modifiers() {
+        let (key, code, modifiers) = parse_key_chord("Cmd+2").unwrap();
+        assert_eq!(key, "2");
+        assert_eq!(code, "Digit2");
+        assert!(modifiers.meta);
+        assert!(!modifiers.control);
+
+        let (key, code, modifiers) = parse_key_chord("Ctrl+Shift+Tab").unwrap();
+        assert_eq!(key, "Tab");
+        assert_eq!(code, "Tab");
+        assert!(modifiers.control);
+        assert!(modifiers.shift);
+        assert!(!modifiers.meta);
     }
 
     #[test]

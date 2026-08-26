@@ -217,7 +217,8 @@ pub struct Check {
     pub type_into: Option<String>,
     /// Literal text to enter after the click step.
     pub text: Option<String>,
-    /// A final named key such as Enter or Escape, sent to `type_into`.
+    /// A final named key or chord such as Enter, Escape, or Meta+2, sent to
+    /// `type_into`.
     pub key: Option<String>,
     /// Focus this named semantic control before sending `key`.
     ///
