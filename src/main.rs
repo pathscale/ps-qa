@@ -2003,9 +2003,7 @@ fn resolved_action_target(nodes: &[SemanticNode], want: &str) -> Option<String> 
     nodes
         .iter()
         .find(|node| {
-            selector_matches_node(node, want)
-                && node.enabled
-                && painted_bounds(node).is_some()
+            selector_matches_node(node, want) && node.enabled && painted_bounds(node).is_some()
         })
         .map(|node| node.name.clone())
 }
