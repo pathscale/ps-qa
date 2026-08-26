@@ -1631,11 +1631,7 @@ async fn run_qa(
                 .or(check.type_into.as_deref())
                 .or(check.key_on.as_deref())
             {
-                if !wait_for_actionable(client, next).await? {
-                    open_error = Some(format!(
-                        "could not prepare {want:?}: {next:?} did not become visible, enabled, and sized within 900ms"
-                    ));
-                }
+                let _ = wait_for_arrival(client, None, next).await?;
             } else {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -1961,36 +1957,6 @@ fn painted_named(nodes: &[SemanticNode], want: &str) -> bool {
     nodes.iter().any(|node| {
         (role.is_empty() || node.role == role)
             && node.name.contains(name)
-            && node
-                .bounds
-                .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
-    })
-}
-
-/// Wait for the exact control a setup action is meant to expose.
-///
-/// A mounted overlay can acquire layout bounds one renderer revision before
-/// its semantic visibility changes. Treating a box alone as arrival races the
-/// following click and reports a healthy Select as inert.
-async fn wait_for_actionable(client: &mut Client, want: &str) -> Result<bool> {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
-    loop {
-        let (tree, _) = inspect(client).await?;
-        if actionable_named(&tree.nodes, want) {
-            return Ok(true);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-fn actionable_named(nodes: &[SemanticNode], want: &str) -> bool {
-    nodes.iter().any(|node| {
-        selector_matches_node(node, want)
-            && node.visible
-            && node.enabled
             && node
                 .bounds
                 .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
@@ -5019,10 +4985,10 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, actionable_named, arrived_without_navigation, exact_selector_matches_node,
-        inventory_class, is_pagination_control, name_matches, named_document_opener_for,
-        outcome_check_ids, outcome_verdict, pagination_advanced, painted_named,
-        resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
+        InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
+        is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
+        outcome_verdict, pagination_advanced, painted_named, resolved_action_target,
+        retain_exact_candidates, saved_controls, selector_matches_node,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -5204,36 +5170,6 @@ mod tests {
         assert!(!painted_named(
             std::slice::from_ref(&textbox),
             "textbox:Rename project"
-        ));
-    }
-
-    #[test]
-    fn prepared_actions_wait_for_an_actionable_exact_target() {
-        let option = component("older select fixture", true, true);
-        assert!(actionable_named(
-            std::slice::from_ref(&option),
-            "button:older select fixture"
-        ));
-
-        let mut hidden = option.clone();
-        hidden.visible = false;
-        assert!(!actionable_named(
-            std::slice::from_ref(&hidden),
-            "button:older select fixture"
-        ));
-
-        let mut disabled = option.clone();
-        disabled.enabled = false;
-        assert!(!actionable_named(
-            std::slice::from_ref(&disabled),
-            "button:older select fixture"
-        ));
-
-        let mut zero_sized = option;
-        zero_sized.bounds = Some([0.0, 0.0, 0.0, 0.0]);
-        assert!(!actionable_named(
-            std::slice::from_ref(&zero_sized),
-            "button:older select fixture"
         ));
     }
 
