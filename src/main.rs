@@ -1490,6 +1490,7 @@ async fn sweep_components(
     dists: &std::path::Path,
     checks_dir: Option<&std::path::Path>,
     startup_timeout: Duration,
+    mode: cli::CheckMode,
 ) -> Result<usize> {
     /*
      * A directory per component, or a page per component.
@@ -1589,10 +1590,18 @@ async fn sweep_components(
             continue;
         }
 
+        // One run per check, or a single run of the whole group when the caller
+        // asked for the application's shared-state behaviour.
+        let runs: Vec<String> = if mode == cli::CheckMode::Sweep {
+            vec![id.clone()]
+        } else {
+            check_ids.clone()
+        };
+
         let mut component_failed = 0_usize;
         let mut launch_error: Option<String> = None;
 
-        for check_id in &check_ids {
+        for check_id in &runs {
             let started = match start_host(host, &dist, startup_timeout) {
                 Ok(started) => started,
                 Err(error) => {
@@ -1924,7 +1933,44 @@ async fn run_qa(
                 click_named_quiet(client, want).await.map(|_| ())
             };
             if let Err(error) = prepared {
-                open_error = Some(format!("could not prepare {want:?}: {error}"));
+                /*
+                 * Say what *is* addressable, not just what was not found.
+                 *
+                 * "could not prepare \"Switch\": no visible, enabled, sized
+                 * semantic control matching it" is true and nearly useless: it
+                 * does not distinguish a broken component from a check naming a
+                 * control that never existed. Ten components failed exactly
+                 * that way, every one of them a manifest guess rather than a
+                 * defect, and each cost a manual measurement to tell apart.
+                 *
+                 * Listing the named controls that are on screen turns the
+                 * common case into a one-line fix: the trigger reads
+                 * "Effort: medium", not "Effort".
+                 */
+                let nearby = match inspect(client).await {
+                    Ok((snapshot, _)) => {
+                        let mut names: Vec<String> = snapshot
+                            .nodes
+                            .iter()
+                            .filter(|node| {
+                                !node.name.is_empty()
+                                    && node.visible
+                                    && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+                            })
+                            .map(|node| format!("{}:{}", node.role, node.name))
+                            .collect();
+                        names.sort();
+                        names.dedup();
+                        names.truncate(8);
+                        if names.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; on screen: {}", names.join(", "))
+                        }
+                    }
+                    Err(_) => String::new(),
+                };
+                open_error = Some(format!("could not prepare {want:?}: {error}{nearby}"));
             }
             if let Some(next) = check
                 .click
@@ -4756,6 +4802,7 @@ async fn main() -> Result<()> {
         dists,
         checks,
         startup_timeout,
+        mode,
     } = &cli.command
     {
         let failures = sweep_components(
@@ -4764,6 +4811,7 @@ async fn main() -> Result<()> {
             dists,
             checks.as_deref(),
             std::time::Duration::from_secs(*startup_timeout),
+            *mode,
         )
         .await?;
         if failures > 0 {
