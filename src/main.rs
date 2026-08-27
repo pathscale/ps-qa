@@ -1411,6 +1411,22 @@ fn stable_arrival(painted_streak: &mut u8, arrived: bool) -> bool {
 /// wrongly. That mistake is why the hover regression shipped.
 ///
 /// Returns the number of failures, so the caller can set an exit code.
+/// A spawned host that is killed when it goes out of scope.
+///
+/// `kill` on the happy path is not enough: anything that leaves the loop early
+/// (a panic, a `?`, a break) orphans the process, and an orphaned host holds a
+/// socket and a document for the rest of the session. One leaked during a sweep
+/// that panicked on a missing profile, and it had to be found and killed by
+/// hand.
+struct HostProcess(std::process::Child);
+
+impl Drop for HostProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Drive a component library one component at a time.
 ///
 /// Each component gets its own host process, its own document and its own
@@ -1463,19 +1479,21 @@ async fn sweep_components(
             continue;
         }
 
-        let mut child = std::process::Command::new(host)
-            .env("AGENCYZERO_BLITZ_INSPECT", "1")
-            .env("AGENCYZERO_BLITZ_DIST", &dist)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| format!("launching {}", host.display()))?;
+        let mut child = HostProcess(
+            std::process::Command::new(host)
+                .env("AGENCYZERO_BLITZ_INSPECT", "1")
+                .env("AGENCYZERO_BLITZ_DIST", &dist)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .with_context(|| format!("launching {}", host.display()))?,
+        );
 
         // The descriptor path, read from the host's stdout. Read on a thread
         // with a timeout around it: a host that dies before announcing would
         // otherwise block the sweep for ever on a pipe that will never produce
         // a line.
-        let stdout = child.stdout.take().expect("stdout was piped");
+        let stdout = child.0.stdout.take().expect("stdout was piped");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(stdout);
@@ -1487,8 +1505,6 @@ async fn sweep_components(
         let descriptor_path = match rx.recv_timeout(startup_timeout) {
             Ok(line) if !line.trim().is_empty() => std::path::PathBuf::from(line.trim().to_owned()),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
                 println!("FAIL {id}: the host never announced a descriptor");
                 verdicts.push((id.clone(), false, "host never announced".to_owned()));
                 failed += 1;
@@ -1498,10 +1514,8 @@ async fn sweep_components(
 
         let outcome = run_component(&descriptor_path, id, checks_dir).await;
 
-        // Always tear the host down, whatever the verdict was. A leaked host
-        // holds a socket and a document for the rest of the sweep.
-        let _ = child.kill();
-        let _ = child.wait();
+        // `child` is dropped here, which kills the host.
+        drop(child);
 
         match outcome {
             Ok(0) => {
