@@ -38,7 +38,6 @@
 use blitz_control_protocol::SemanticNode;
 use std::collections::HashMap;
 
-
 /// A control to hover, and how many times to enter it.
 ///
 /// `Some("Trigger")` and `Some(("Trigger", 5))` both parse, so a check that
@@ -183,7 +182,7 @@ pub enum Expect {
     /// Written as `WxH` in `expect_size`, either side optional and each a
     /// minimum unless prefixed: `24` is at least 24, `=24` is exactly 24,
     /// `<=24` is at most. Tolerance is a pixel, because layout rounds.
-    ExpectSize,
+    Measures,
     /// The named subject paints above the named comparison control.
     ///
     /// This is a rendered-order assertion, not DOM order. It verifies list
@@ -291,7 +290,7 @@ pub struct Check {
     pub key_on: Option<String>,
     /// The second named node for a relative-position expectation.
     pub compare: Option<String>,
-    /// Target size for [`ExpectSize`](Expect::ExpectSize), as `WxH`.
+    /// Target size for [`Measures`](Expect::Measures), as `WxH`.
     ///
     /// Either side may be empty to leave that axis unasserted: `x24` asserts
     /// height alone, which is the common case for a control whose width is
@@ -627,11 +626,11 @@ pub fn verdict(
         Expect::TargetPaints => {
             return Err("TargetPaints must be resolved by the live QA runner".to_owned());
         }
-        Expect::ExpectSize => {
+        Expect::Measures => {
             let want = check
                 .expect_size
                 .as_deref()
-                .ok_or_else(|| "ExpectSize requires expect_size".to_owned())?;
+                .ok_or_else(|| "Measures requires expect_size".to_owned())?;
             let node = found
                 .iter()
                 .find(|node| paints(node))
@@ -641,9 +640,7 @@ pub fn verdict(
                 format!("expect_size {want:?} is not WxH; use `190x24`, `x24` or `190x`")
             })?;
 
-            for (axis, spec, actual) in
-                [("width", want_w, box_[2]), ("height", want_h, box_[3])]
-            {
+            for (axis, spec, actual) in [("width", want_w, box_[2]), ("height", want_h, box_[3])] {
                 let spec = spec.trim();
                 if spec.is_empty() {
                     continue;
