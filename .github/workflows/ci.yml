@@ -1,10 +1,17 @@
 name: CI
 
-# The unit tests only. Running the *checks* needs a live application with a
-# window server, which lives in the app's own repository as a manually
-# triggered job (`qa-panel.yml` in agencyzero), because it needs macOS and
-# minutes. `cargo test` here is the engine: the coverage arithmetic, the
-# reach rules, the sweep's verdicts.
+# `cargo test` is the engine: the coverage arithmetic, the reach rules, the
+# sweep's verdicts.
+#
+# A second job drives a real sweep. That used to be impossible here, because
+# hosting the inspection socket meant opening a window and so needed macOS and
+# a window server; the note this replaces said so. `qa-inspect-host` serves the
+# socket with no window, so a sweep runs on a Linux runner, and
+# `sweep-components` is covered by something other than having been tried by
+# hand once.
+#
+# Driving a real *application* still lives in that application's repository
+# (`qa-panel.yml` in agencyzero).
 on:
   push:
     branches: [master]
@@ -83,3 +90,32 @@ jobs:
             exit 1
           fi
           grep -q 'no checks at' /tmp/err.txt
+
+  sweep:
+    name: Sweep a component
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The host is a separate crate on purpose: it links blitz, and this one
+      # must not, so that driving a control never builds a browser engine.
+      - name: Install the inspection host
+        run: cargo install qa-inspect-host --locked
+
+      - name: Build
+        run: cargo build --release
+
+      # One page, one check, no bundler. Proves the whole path: launch a host,
+      # wait for the descriptor it announces, attach, judge, tear it down. A
+      # regression anywhere in that chain fails here rather than in whichever
+      # project next tries to sweep.
+      - name: Sweep the fixture
+        working-directory: tests/sweep-fixture
+        run: |
+          ../../target/release/ps-qa --app ps-qa.ron sweep-components \
+            --host "$HOME/.cargo/bin/qa-inspect-host" \
+            --dists pages \
+            --checks checks
