@@ -1449,14 +1449,33 @@ async fn sweep_components(
 ) -> Result<usize> {
     use std::io::BufRead;
 
+    /*
+     * A directory per component, or a page per component.
+     *
+     * A bundler that emits `button.html` beside `button.js` already produces
+     * one page per component; requiring a directory each meant every project
+     * copied its build into throwaway directories first. Both layouts are
+     * discovered here so neither needs a staging step.
+     */
     let ids: Vec<String> = if ids.is_empty() {
         let mut found: Vec<String> = std::fs::read_dir(dists)
             .with_context(|| format!("reading {}", dists.display()))?
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().is_dir())
-            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    entry.file_name().into_string().ok()
+                } else if path.extension().is_some_and(|ext| ext == "html") {
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(str::to_owned)
+                } else {
+                    None
+                }
+            })
             .collect();
         found.sort();
+        found.dedup();
         found
     } else {
         ids.to_vec()
@@ -1471,13 +1490,24 @@ async fn sweep_components(
     let mut verdicts: Vec<(String, bool, String)> = Vec::new();
 
     for id in &ids {
-        let dist = dists.join(id);
-        if !dist.is_dir() {
-            println!("FAIL {id}: no built page at {}", dist.display());
+        // A directory holding `index.html`, or `<id>.html` beside its siblings.
+        // The host accepts either, so prefer whichever this build produced.
+        let as_dir = dists.join(id);
+        let as_page = dists.join(format!("{id}.html"));
+        let dist = if as_dir.is_dir() {
+            as_dir
+        } else if as_page.is_file() {
+            as_page
+        } else {
+            println!(
+                "FAIL {id}: no built page at {} or {}",
+                as_dir.display(),
+                as_page.display()
+            );
             verdicts.push((id.clone(), false, "no built page".to_owned()));
             failed += 1;
             continue;
-        }
+        };
 
         let mut child = HostProcess(
             std::process::Command::new(host)
