@@ -1511,10 +1511,10 @@ async fn sweep_components(
 
         let mut child = HostProcess(
             std::process::Command::new(host)
-                // The page this host is to serve. `QA_HOST_DIST` is
-                // `qa-headless-host`'s interface; a host with a different one
+                // The page this host is to serve. `QA_INSPECT_PAGE` is
+                // `qa-inspect-host`'s interface; a host with a different one
                 // can read its own environment and ignore this.
-                .env("QA_HOST_DIST", &dist)
+                .env("QA_INSPECT_PAGE", &dist)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .spawn()
