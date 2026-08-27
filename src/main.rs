@@ -1427,6 +1427,50 @@ impl Drop for HostProcess {
     }
 }
 
+/// Launch a host for one page and wait for the descriptor it announces.
+///
+/// Waiting for the line rather than sleeping is what makes this reliable on a
+/// loaded machine: a fixed sleep reads a slow first paint as a host that never
+/// started.
+fn start_host(
+    host: &std::path::Path,
+    page: &std::path::Path,
+    startup_timeout: Duration,
+) -> std::result::Result<(HostProcess, std::path::PathBuf), String> {
+    use std::io::BufRead;
+
+    let mut child = HostProcess(
+        std::process::Command::new(host)
+            // The page this host is to serve. `QA_INSPECT_PAGE` is
+            // `qa-inspect-host`'s interface; a host with a different one can
+            // read its own environment and ignore this.
+            .env("QA_INSPECT_PAGE", page)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("launching {}: {error}", host.display()))?,
+    );
+
+    // Read on a thread with a deadline around it: a host that dies before
+    // announcing would otherwise block for ever on a pipe that will never
+    // produce a line.
+    let stdout = child.0.stdout.take().expect("stdout was piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+
+    match rx.recv_timeout(startup_timeout) {
+        Ok(line) if !line.trim().is_empty() => {
+            Ok((child, std::path::PathBuf::from(line.trim().to_owned())))
+        }
+        _ => Err("the host never announced a descriptor".to_owned()),
+    }
+}
+
 /// Drive a component library one component at a time.
 ///
 /// Each component gets its own host process, its own document and its own
@@ -1447,8 +1491,6 @@ async fn sweep_components(
     checks_dir: Option<&std::path::Path>,
     startup_timeout: Duration,
 ) -> Result<usize> {
-    use std::io::BufRead;
-
     /*
      * A directory per component, or a page per component.
      *
@@ -1509,45 +1551,76 @@ async fn sweep_components(
             continue;
         };
 
-        let mut child = HostProcess(
-            std::process::Command::new(host)
-                // The page this host is to serve. `QA_INSPECT_PAGE` is
-                // `qa-inspect-host`'s interface; a host with a different one
-                // can read its own environment and ignore this.
-                .env("QA_INSPECT_PAGE", &dist)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .with_context(|| format!("launching {}", host.display()))?,
-        );
-
-        // The descriptor path, read from the host's stdout. Read on a thread
-        // with a timeout around it: a host that dies before announcing would
-        // otherwise block the sweep for ever on a pipe that will never produce
-        // a line.
-        let stdout = child.0.stdout.take().expect("stdout was piped");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(stdout);
-            let mut line = String::new();
-            let _ = reader.read_line(&mut line);
-            let _ = tx.send(line);
-        });
-
-        let descriptor_path = match rx.recv_timeout(startup_timeout) {
-            Ok(line) if !line.trim().is_empty() => std::path::PathBuf::from(line.trim().to_owned()),
-            _ => {
-                println!("FAIL {id}: the host never announced a descriptor");
-                verdicts.push((id.clone(), false, "host never announced".to_owned()));
+        /*
+         * One host per *check*, not per component.
+         *
+         * Checks share a document otherwise, and a check then runs against
+         * whatever its predecessor left behind. Measured on Dropdown: `-opens`
+         * leaves the menu open, `-changes` presses the same trigger to prepare
+         * itself, that press closes the menu, and the click lands on an item
+         * that was on screen a moment earlier. Select failed the same way.
+         * Both pass alone, so the sweep reported two working components as
+         * broken.
+         *
+         * `run_qa` deliberately assumes the opposite for an application: there,
+         * a later check inherits the surface an earlier one navigated to, and
+         * re-navigating would be wrong. A component page has no surfaces and
+         * nothing to inherit, so the isolation the checks assume has to come
+         * from somewhere, and the host lifecycle is where it is cheapest.
+         */
+        let check_ids: Vec<String> = match qa::checks(checks_dir) {
+            Ok(all) => all
+                .iter()
+                .filter(|check| check.group == *id)
+                .map(|check| check.id.clone())
+                .collect(),
+            Err(error) => {
+                println!("FAIL {id}: {error}");
+                verdicts.push((id.clone(), false, error));
                 failed += 1;
                 continue;
             }
         };
 
-        let outcome = run_component(&descriptor_path, id, checks_dir).await;
+        if check_ids.is_empty() {
+            println!("FAIL {id}: no checks in group {id:?}");
+            verdicts.push((id.clone(), false, "no checks".to_owned()));
+            failed += 1;
+            continue;
+        }
 
-        // `child` is dropped here, which kills the host.
-        drop(child);
+        let mut component_failed = 0_usize;
+        let mut launch_error: Option<String> = None;
+
+        for check_id in &check_ids {
+            let started = match start_host(host, &dist, startup_timeout) {
+                Ok(started) => started,
+                Err(error) => {
+                    launch_error = Some(error);
+                    break;
+                }
+            };
+            let (child, descriptor_path) = started;
+
+            let outcome = run_component(&descriptor_path, check_id, checks_dir).await;
+
+            // Dropped here, which kills this check's host before the next
+            // one starts.
+            drop(child);
+
+            match outcome {
+                Ok(count) => component_failed += count,
+                Err(error) => {
+                    launch_error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+
+        let outcome: Result<usize> = match launch_error {
+            Some(error) => Err(eyre!(error)),
+            None => Ok(component_failed),
+        };
 
         match outcome {
             Ok(0) => {
