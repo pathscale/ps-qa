@@ -399,6 +399,38 @@ pub enum Command {
         #[arg(long)]
         checks: Option<PathBuf>,
     },
+
+    /// Drive a component library one component at a time, each in its own
+    /// process, and report a verdict per component. Exits 1 on any failure.
+    ///
+    /// One process per component is the point rather than an inefficiency. A
+    /// shared process makes every check order-dependent, and a component that
+    /// wedges the renderer takes down every component after it; a failure then
+    /// describes its neighbour rather than itself. Each run here starts from a
+    /// fresh page, so a verdict is about its own component and nothing else.
+    ///
+    /// The host is launched with the component's built page, hosts the
+    /// inspection socket itself and opens no window, so a sweep of a whole
+    /// library runs next to someone using their machine and on a CI box with no
+    /// display server. `--host` names the binary and it is expected to print
+    /// the descriptor path on stdout when it is ready to be attached to.
+    SweepComponents {
+        /// Component ids to run. Defaults to every directory under `--dists`.
+        ids: Vec<String>,
+        /// The headless host binary, which must print its descriptor path on
+        /// stdout once it is serving.
+        #[arg(long)]
+        host: PathBuf,
+        /// Where the per-component built pages live, one directory per id.
+        #[arg(long)]
+        dists: PathBuf,
+        /// Where the checks live, one `<id>.ron` per component.
+        #[arg(long)]
+        checks: Option<PathBuf>,
+        /// How long to wait for a component's host to announce itself.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout: u64,
+    },
 }
 
 /// Whether `--trace` was given.
