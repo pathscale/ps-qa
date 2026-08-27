@@ -100,10 +100,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # The host links a renderer, which on Linux means GTK and its pkg-config
+      # files. This crate needs none of that - it talks over a socket - but the
+      # job that installs the host does.
+      - name: System libraries the host needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev pkg-config
+
       # The host is a separate crate on purpose: it links blitz, and this one
       # must not, so that driving a control never builds a browser engine.
+      #
+      # Pinned, because an unpinned install took 0.1.0, which predates the
+      # Hover support a repeated-hover check depends on.
       - name: Install the inspection host
-        run: cargo install qa-inspect-host --locked
+        run: cargo install qa-inspect-host --version '^0.1.1' --locked
 
       - name: Build
         run: cargo build --release

@@ -1427,6 +1427,20 @@ impl Drop for HostProcess {
     }
 }
 
+/// A node to park the pointer on between hovers.
+///
+/// The largest painted node, which is the window or its root container: it is
+/// always present, and it is never the small control a check is hovering.
+async fn away_target(client: &mut Client) -> Result<Option<u64>> {
+    let (snapshot, _) = inspect(client).await?;
+    Ok(snapshot
+        .nodes
+        .iter()
+        .filter_map(|node| node.bounds.map(|b| (node.id, b[2] * b[3])))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| id))
+}
+
 /// Launch a host for one page and wait for the descriptor it announces.
 ///
 /// Waiting for the line rather than sleeping is what makes this reliable on a
@@ -1838,7 +1852,8 @@ async fn run_qa(
          */
         let setup_target = check
             .hover
-            .as_deref()
+            .as_ref()
+            .map(qa::Hover::target)
             .or(check.prepare.as_deref())
             .or(check.click.as_deref())
             .or(check.type_into.as_deref())
@@ -1872,6 +1887,18 @@ async fn run_qa(
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
+        /*
+         * Before any hovering, so the repeated hover below has something to be
+         * compared against. Every check that hovers gets an accumulation
+         * assertion for free out of this pair, with nothing declared in the
+         * check file.
+         */
+        let untouched = if check.hover.is_some() {
+            Some(inspect(client).await?.0)
+        } else {
+            None
+        };
+
         client.set_request_timeout(Duration::from_millis(900));
 
         // Hover first: the row actions do not exist until `pointerenter`.
@@ -1880,7 +1907,7 @@ async fn run_qa(
         // matches. Another retained surface may render the same control names,
         // so hovering by name alone can land in the wrong list.
         if open_error.is_none()
-            && let Some(want) = check.hover.as_deref()
+            && let Some(want) = check.hover.as_ref().map(qa::Hover::target)
         {
             let (tree, _) = inspect(client).await?;
             // Through the shared matcher, so hover understands `role:name` and
@@ -1903,9 +1930,52 @@ async fn run_qa(
                         node_id,
                     }))
                     .await?;
-                client
-                    .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
-                    .await?;
+                /*
+                 * Hover as many times as the check asked for.
+                 *
+                 * Moving the pointer away between hovers, because hovering the
+                 * same node twice with no departure is one hover as far as the
+                 * renderer is concerned, and the defect this exists to catch
+                 * lives in the enter/leave pair: a pill whose hover adds a
+                 * shadow layer and never removes it looks right once and
+                 * accumulates from the second time on.
+                 */
+                /*
+                 * Twice, always, with a departure between.
+                 *
+                 * Not a field, because a field is a decision and a decision
+                 * nobody makes is a check nobody wrote: the abuse has to be
+                 * what happens by default or it does not happen. Hovering once
+                 * proves a control responds; hovering twice is what catches the
+                 * class of defect where entering adds something that leaving
+                 * never removes, which is invisible to a single hover and to
+                 * anyone not hovering twice by hand.
+                 *
+                 * The departure matters: hovering the same node twice with no
+                 * leave in between is one hover as far as the renderer is
+                 * concerned, and the defect lives in the enter/leave pair.
+                 */
+                let times = check.hover.as_ref().map_or(1, qa::Hover::times);
+                for turn in 0..times {
+                    if turn > 0 {
+                        // Away, so the next hover is a real entry. The root is
+                        // always present and is never the hovered control.
+                        if let Some(root) = away_target(client).await? {
+                            client
+                                .agent(&AgentControlRequest::Act(AgentAction::Hover {
+                                    node_id: root,
+                                }))
+                                .await?;
+                            tokio::time::sleep(Duration::from_millis(30)).await;
+                        }
+                    }
+                    client
+                        .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+                        .await?;
+                    if times > 1 {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                    }
+                }
                 if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
                     let _ = wait_for_arrival(client, None, next).await?;
                 } else {
@@ -1981,6 +2051,40 @@ async fn run_qa(
                 let _ = wait_for_arrival(client, None, next).await?;
             } else {
                 tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
+        /*
+         * Nothing accumulated across the repeated hover.
+         *
+         * Entering a control can legitimately mount something - that is what a
+         * hover-revealed action is - so this cannot demand the count be
+         * unchanged. What it can demand is that the *second* hover adds nothing
+         * the first did not, which is exactly the shape of the defect: a pill
+         * whose hover appends a shadow layer and never removes it grows by one
+         * node per hover, for ever.
+         *
+         * Checked here rather than declared per check, because an assertion
+         * somebody has to remember to write is one that is missing from every
+         * check written before anyone knew the defect existed.
+         */
+        if let Some(untouched) = untouched.as_ref()
+            && open_error.is_none()
+        {
+            let (after_hovering, _) = inspect(client).await?;
+            let grew = after_hovering.nodes.len() as i64 - untouched.nodes.len() as i64;
+            if grew > 0 {
+                let (again, _) = inspect(client).await?;
+                let grew_again = again.nodes.len() as i64 - after_hovering.nodes.len() as i64;
+                if grew_again > 0 {
+                    open_error = Some(format!(
+                        "hovering twice left {grew_again} more node(s) behind \
+                         ({} -> {} -> {}); something the hover adds is never removed",
+                        untouched.nodes.len(),
+                        after_hovering.nodes.len(),
+                        again.nodes.len()
+                    ));
+                }
             }
         }
 
@@ -3609,7 +3713,7 @@ fn outcome_check_ids(node: &SemanticNode, checks: &[qa::Check]) -> Vec<String> {
         .filter(|check| {
             let driven = [
                 check.open.as_deref(),
-                check.hover.as_deref(),
+                check.hover.as_ref().map(qa::Hover::target),
                 check.click.as_deref(),
                 check.type_into.as_deref(),
                 check.key_on.as_deref(),
@@ -5531,6 +5635,7 @@ mod tests {
             key: None,
             key_on: None,
             compare: None,
+            expect_size: None,
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
