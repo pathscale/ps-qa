@@ -2937,13 +2937,31 @@ async fn open_named(client: &mut Client, want: &str) -> Result<()> {
 /// itself is the behavior under test.
 async fn press_named(client: &mut Client, want: &str) -> Result<()> {
     /*
-     * Buttons only, and on screen - see `locate_button`.
+     * Any role, on screen - the same resolution `click` uses.
      *
-     * A control and the thing it opens may share an accessible name, so a
-     * name-only match can select the output instead of the activator.
-     * Restricting this explicit diagnostic to buttons keeps the target clear.
+     * This was buttons only, on the reasoning that a control and the thing it
+     * opens can share an accessible name, so a name-only match might select
+     * the output instead of the activator. That is a real hazard for
+     * `open_named`, which is looking for an activator. It is the wrong rule
+     * here: the point of this diagnostic is to compare the pointer path
+     * against the node-addressed one on the *same* control, and a role filter
+     * that `click` does not apply makes the two incomparable.
+     *
+     * Concretely, a menu item has role `menuitem`, so pressing one always
+     * failed with "no visible, enabled, sized node" while clicking the
+     * identical node worked. That read as a dismissal-on-pointerdown defect in
+     * the overlay - it was recorded as a known gap in AgencyZero's pill menu
+     * checks - and it was this filter the whole time. Selecting from a menu by
+     * pointer, the gesture a person actually makes, had no coverage at all.
      */
-    let (id, b) = locate_button(client, want).await?;
+    // `role:name`, as `painted_named` and the check subjects already accept.
+    // Without it a bare name falls back to substring matching over every node:
+    // pressing "low" in this application matched a Keychain warning containing
+    // "allow" and moved the pointer to the top of the window. A check that
+    // asserts a menu selection has to be able to say which node it means.
+    let (role, name) = want.split_once(':').unwrap_or(("", want));
+    let roles: &[&str] = if role.is_empty() { &[] } else { &[role] };
+    let (id, b) = locate_control(client, name, roles).await?;
     let (x, y) = (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
     if cli::trace() {
         println!("        pressing {want:?} (id {id}) at {x:.0},{y:.0}");
@@ -5357,10 +5375,16 @@ async fn main() -> Result<()> {
          */
         cli::Command::Press { name } => {
             let (snapshot, _) = inspect(&mut client).await?;
-            let wanted = name.to_lowercase();
+            // `role:name`, the form `find` and every check subject accept. A
+            // bare name still matches by substring, which is ambiguous in a
+            // real application: "low" also matches a Keychain warning
+            // containing "allow", and the pointer went there instead.
+            let (role, bare) = name.split_once(':').unwrap_or(("", name.as_str()));
+            let wanted = bare.to_lowercase();
             let Some(node) = snapshot
                 .nodes
                 .iter()
+                .filter(|n| role.is_empty() || n.role == role)
                 .filter(|n| n.name.to_lowercase().contains(&wanted))
                 .filter(|n| n.visible && n.enabled)
                 .find(|n| n.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
