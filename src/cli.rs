@@ -35,7 +35,16 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Whether the checks of one component share a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CheckMode {
+    /// A fresh host per check. Nothing a check does can reach its neighbour.
+    Isolated,
+    /// One host for the group, state carried between checks.
+    Sweep,
+}
 
 #[derive(Parser)]
 #[command(
@@ -430,6 +439,22 @@ pub enum Command {
         /// How long to wait for a component's host to announce itself.
         #[arg(long, default_value_t = 30)]
         startup_timeout: u64,
+
+        /// How the checks of one component relate to each other.
+        ///
+        /// `isolated` (the default) gives every check its own host, so it runs
+        /// against a page nothing has touched. On a component page there are no
+        /// surfaces to inherit and a check that opens a menu simply leaves it
+        /// open for its neighbour: Dropdown and Select both failed that way
+        /// while passing alone, because the next check pressed the same trigger
+        /// to prepare itself and closed what was already open.
+        ///
+        /// `sweep` runs the whole group against one host, sharing state, which
+        /// is how a whole-application run behaves and the right choice for a
+        /// page whose checks are deliberately a sequence. It is also faster:
+        /// one host rather than one per check.
+        #[arg(long, value_enum, default_value_t = CheckMode::Isolated)]
+        mode: CheckMode,
     },
 }
 
