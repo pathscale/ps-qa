@@ -142,8 +142,20 @@ async fn layout(client: &mut Client, want: &str) -> Result<()> {
                 .and_then(|value| value.as_f64())
                 .unwrap_or(f64::NAN)
         };
+        // `scroll=` was labelled `content=` while printing `scrollSize`, which
+        // is the scrollable extent and not the content box. Both are named for
+        // what they are now, and the real content box is reported beside the
+        // border and padding that separate the two.
+        //
+        // border/padding read `t,r,b,l`, CSS shorthand order. A box that came
+        // out taller than its declared height is then arithmetic rather than
+        // inference: content + padding + border is the outer height, and
+        // whichever term is unexpected names the property to go and look at.
         println!(
-            "{:>6}  {:<16} {:>8.1} {:>8.1} {:>8.1} {:>8.1}  scroll={:.1},{:.1} range={:.1},{:.1} client={:.1},{:.1} content={:.1},{:.1}  {}",
+            "{:>6}  {:<16} {:>8.1} {:>8.1} {:>8.1} {:>8.1}  scroll={:.1},{:.1} range={:.1},{:.1} \
+             border-box={:.1},{:.1} content-box={:.1},{:.1} \
+             border={:.1},{:.1},{:.1},{:.1} padding={:.1},{:.1},{:.1},{:.1} \
+             scrollable={:.1},{:.1}  {}",
             id,
             role,
             read("x", 0),
@@ -156,6 +168,16 @@ async fn layout(client: &mut Client, want: &str) -> Result<()> {
             pair("scrollRange", 1),
             pair("clientSize", 0),
             pair("clientSize", 1),
+            pair("contentSize", 0),
+            pair("contentSize", 1),
+            pair("border", 0),
+            pair("border", 1),
+            pair("border", 2),
+            pair("border", 3),
+            pair("padding", 0),
+            pair("padding", 1),
+            pair("padding", 2),
+            pair("padding", 3),
             pair("scrollSize", 0),
             pair("scrollSize", 1),
             name.chars().take(60).collect::<String>()
