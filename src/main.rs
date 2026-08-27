@@ -22,7 +22,7 @@ use blitz_control_protocol::{
     DebugStream, DiagnosticsRequest, InputCommand, KeyPhase, Modifiers, PointerPhase,
     RendererMetrics, SemanticNode, SnapshotRequest, WheelPhase,
 };
-use eyre::{Result, bail, eyre};
+use eyre::{Context, Result, bail, eyre};
 
 mod app;
 mod audit;
@@ -1411,6 +1411,134 @@ fn stable_arrival(painted_streak: &mut u8, arrived: bool) -> bool {
 /// wrongly. That mistake is why the hover regression shipped.
 ///
 /// Returns the number of failures, so the caller can set an exit code.
+/// Drive a component library one component at a time.
+///
+/// Each component gets its own host process, its own document and its own
+/// socket, and the process is torn down before the next one starts. That
+/// isolation is the whole design: a shared process makes every check
+/// order-dependent, so a failure caused by the previous component's leftover
+/// state is indistinguishable from a real one, and a component that wedges the
+/// renderer takes down every component after it.
+///
+/// The host is expected to print its descriptor path on stdout once it is
+/// serving. Waiting for that line rather than sleeping a fixed interval is what
+/// makes this reliable on a loaded machine: a slow first paint would otherwise
+/// read as a component that never mounted.
+async fn sweep_components(
+    ids: &[String],
+    host: &std::path::Path,
+    dists: &std::path::Path,
+    checks_dir: Option<&std::path::Path>,
+    startup_timeout: Duration,
+) -> Result<usize> {
+    use std::io::BufRead;
+
+    let ids: Vec<String> = if ids.is_empty() {
+        let mut found: Vec<String> = std::fs::read_dir(dists)
+            .with_context(|| format!("reading {}", dists.display()))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        found.sort();
+        found
+    } else {
+        ids.to_vec()
+    };
+
+    if ids.is_empty() {
+        bail!("no components to sweep under {}", dists.display());
+    }
+
+    let mut passed = 0_usize;
+    let mut failed = 0_usize;
+    let mut verdicts: Vec<(String, bool, String)> = Vec::new();
+
+    for id in &ids {
+        let dist = dists.join(id);
+        if !dist.is_dir() {
+            println!("FAIL {id}: no built page at {}", dist.display());
+            verdicts.push((id.clone(), false, "no built page".to_owned()));
+            failed += 1;
+            continue;
+        }
+
+        let mut child = std::process::Command::new(host)
+            .env("AGENCYZERO_BLITZ_INSPECT", "1")
+            .env("AGENCYZERO_BLITZ_DIST", &dist)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("launching {}", host.display()))?;
+
+        // The descriptor path, read from the host's stdout. Read on a thread
+        // with a timeout around it: a host that dies before announcing would
+        // otherwise block the sweep for ever on a pipe that will never produce
+        // a line.
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let _ = tx.send(line);
+        });
+
+        let descriptor_path = match rx.recv_timeout(startup_timeout) {
+            Ok(line) if !line.trim().is_empty() => std::path::PathBuf::from(line.trim().to_owned()),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                println!("FAIL {id}: the host never announced a descriptor");
+                verdicts.push((id.clone(), false, "host never announced".to_owned()));
+                failed += 1;
+                continue;
+            }
+        };
+
+        let outcome = run_component(&descriptor_path, id, checks_dir).await;
+
+        // Always tear the host down, whatever the verdict was. A leaked host
+        // holds a socket and a document for the rest of the sweep.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        match outcome {
+            Ok(0) => {
+                println!("PASS {id}");
+                verdicts.push((id.clone(), true, String::new()));
+                passed += 1;
+            }
+            Ok(count) => {
+                println!("FAIL {id}: {count} check(s) failed");
+                verdicts.push((id.clone(), false, format!("{count} check(s) failed")));
+                failed += 1;
+            }
+            Err(error) => {
+                println!("FAIL {id}: {error}");
+                verdicts.push((id.clone(), false, error.to_string()));
+                failed += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("passed: {passed}  failed: {failed}  of {}", ids.len());
+    Ok(failed)
+}
+
+/// Attach to one component's host and judge its checks.
+async fn run_component(
+    descriptor_path: &std::path::Path,
+    id: &str,
+    checks_dir: Option<&std::path::Path>,
+) -> Result<usize> {
+    let descriptor = inspector::discover(descriptor_path.to_str())?;
+    let mut client = Client::connect(&descriptor.socket_path()).await?;
+    client.initialize().await?;
+    run_qa(&mut client, Some(id), checks_dir).await
+}
+
 async fn run_qa(
     client: &mut Client,
     group: Option<&str>,
@@ -4498,6 +4626,33 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // A component sweep launches its own hosts, so it attaches to something
+    // different for every component and cannot use the descriptor discovered
+    // once up front. Dispatched here, before that lookup, for the same reason
+    // the offline commands above are: requiring a running application would
+    // defeat the point.
+    if let cli::Command::SweepComponents {
+        ids,
+        host,
+        dists,
+        checks,
+        startup_timeout,
+    } = &cli.command
+    {
+        let failures = sweep_components(
+            ids,
+            host,
+            dists,
+            checks.as_deref(),
+            std::time::Duration::from_secs(*startup_timeout),
+        )
+        .await?;
+        if failures > 0 {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // Before attaching to anything: a run that drives an application against a
     // profile it does not have is worse than one that refuses to start, and
     // failing here names the missing file rather than reporting nothing found.
@@ -5039,7 +5194,12 @@ async fn main() -> Result<()> {
         }
         // No catch-all: the parser rejects an unknown command, with the list of
         // real ones, before any of this runs.
-        cli::Command::List { .. } | cli::Command::Reconcile { .. } => {
+        // Dispatched before the descriptor lookup, because they launch their
+        // own hosts or read only files. Listed here so the match stays
+        // exhaustive and a new command cannot be forgotten.
+        cli::Command::SweepComponents { .. }
+        | cli::Command::List { .. }
+        | cli::Command::Reconcile { .. } => {
             unreachable!("handled before the client connects")
         }
     }
