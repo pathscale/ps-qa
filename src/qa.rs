@@ -361,8 +361,25 @@ pub fn verdict(
     let found = matching(after, &check.subject);
     match check.expect {
         Expect::Vanishes => {
-            let on_screen: Vec<&SemanticNode> =
-                found.iter().copied().filter(|node| paints(node)).collect();
+            /*
+             * Both signals, because neither answers this alone.
+             *
+             * `paints` is geometry only, and deliberately so: `visible` walks
+             * ancestors for `display:none` and `aria-hidden` and reported a
+             * screen full of icons as painting nothing. But a closed overlay
+             * keeps its box. Measured on Select: Escape closes the listbox
+             * correctly and both options stay in the tree at 1170x36, now
+             * hidden, so geometry alone called a working component broken.
+             *
+             * `Paints` still asks about geometry, where trusting `visible`
+             * would reintroduce the false negative. Only this arm, which asks
+             * whether something went away, needs to hear that it did.
+             */
+            let on_screen: Vec<&SemanticNode> = found
+                .iter()
+                .copied()
+                .filter(|node| node.visible && paints(node))
+                .collect();
             if let Some(node) = on_screen.first() {
                 let b = node.bounds.unwrap_or([0.0; 4]);
                 return Err(format!(
