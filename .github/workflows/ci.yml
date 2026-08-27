@@ -93,22 +93,17 @@ jobs:
 
   sweep:
     name: Sweep a component
-    runs-on: ubuntu-latest
+    # macOS, because the host has to build. `qa-inspect-host` links the Tauri
+    # runtime, whose Linux side wants GTK window traits it does not implement:
+    # `cargo install` fails on `missing: gtk_window, default_vbox` before a
+    # sweep is ever attempted. Installing the system libraries was not enough,
+    # and is not the problem.
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      # The host links a renderer, which on Linux means GTK and its pkg-config
-      # files. This crate needs none of that - it talks over a socket - but the
-      # job that installs the host does.
-      - name: System libraries the host needs
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev pkg-config
 
       # The host is a separate crate on purpose: it links blitz, and this one
       # must not, so that driving a control never builds a browser engine.
