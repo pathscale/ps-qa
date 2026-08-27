@@ -2092,6 +2092,41 @@ async fn run_qa(
         // baseline afterward: inspecting before hover both omitted that real
         // pre-action state and paid for an immediately discarded snapshot.
         let (before, _) = inspect(client).await?;
+
+        /*
+         * The tree is mostly nodes somebody can see.
+         *
+         * Every other assertion here names one control and asks about it, so a
+         * document can fill with abandoned subtrees while every check passes:
+         * the control they name is still present and still correct, and the
+         * dead nodes are 0x0 and hidden, so they do not even perturb the
+         * measurement. Measured on a real instance after a few hours of use,
+         * 96,263 nodes where a fresh one holds 635, and 91% of them zero-box.
+         * Every check passed throughout, and `ps-qa ghost`, which exists for
+         * exactly this, could not finish because the tree had grown past what
+         * the inspector would serve.
+         *
+         * So the question has to be asked for free, on every check, rather
+         * than written into one somebody thinks to add. A view legitimately
+         * holds hidden nodes - a closed menu, a collapsed row - so this is a
+         * ratio and a generous one: past four dead nodes for every live one,
+         * something is being retained rather than reused.
+         */
+        {
+            let dead = before
+                .nodes
+                .iter()
+                .filter(|node| !node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
+                .count();
+            let live = before.nodes.len().saturating_sub(dead);
+            if live > 0 && dead > live * 4 {
+                open_error = Some(format!(
+                    "the document holds {dead} node(s) with no box against {live} with one, \
+                     out of {}; something is retaining subtrees rather than reusing them",
+                    before.nodes.len()
+                ));
+            }
+        }
         let mut check_started =
             (check.click.is_none() && check.text.is_none() && check.key.is_none())
                 .then(Instant::now);
