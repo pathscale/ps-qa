@@ -38,6 +38,38 @@
 use blitz_control_protocol::SemanticNode;
 use std::collections::HashMap;
 
+
+/// A control to hover, and how many times to enter it.
+///
+/// `Some("Trigger")` and `Some(("Trigger", 5))` both parse, so a check that
+/// only needs one entry says so in the shortest way and nothing already written
+/// has to change.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Hover {
+    /// Enter once.
+    Once(String),
+    /// Enter this many times, leaving between each.
+    Times(String, u8),
+}
+
+impl Hover {
+    /// The control to enter.
+    pub fn target(&self) -> &str {
+        match self {
+            Hover::Once(name) | Hover::Times(name, _) => name,
+        }
+    }
+
+    /// How many entries, never fewer than one.
+    pub fn times(&self) -> u8 {
+        match self {
+            Hover::Once(_) => 1,
+            Hover::Times(_, times) => (*times).max(1),
+        }
+    }
+}
+
 /// What a single check asserts once its action has run.
 ///
 /// The full vocabulary is kept whether or not a check currently uses every
@@ -138,6 +170,20 @@ pub enum Expect {
     /// proves that exact row survived without comparing a broad family count
     /// that hover-revealed neighbours can legitimately change.
     TargetPaints,
+    /// The subject's box is the size it is supposed to be.
+    ///
+    /// Every other assertion here is satisfied by *any* non-zero box, which is
+    /// how a control with a correct role, a correct name and correct text
+    /// passes while rendering as a sliver. A pill that should stand 24px tall
+    /// and comes out at 8 has lost its padding or its line-height; a menu that
+    /// should be at least 190px wide and comes out at 40 has lost its
+    /// min-width. Both are the styling artefacts that make a component look
+    /// broken while the semantic tree reports it as fine.
+    ///
+    /// Written as `WxH` in `expect_size`, either side optional and each a
+    /// minimum unless prefixed: `24` is at least 24, `=24` is exactly 24,
+    /// `<=24` is at most. Tolerance is a pixel, because layout rounds.
+    ExpectSize,
     /// The named subject paints above the named comparison control.
     ///
     /// This is a rendered-order assertion, not DOM order. It verifies list
@@ -210,7 +256,25 @@ pub struct Check {
     #[serde(default)]
     pub prepare_key: Option<String>,
     /// Hover this node first, if the control is revealed on hover.
-    pub hover: Option<String>,
+    ///
+    /// Either a name, or a name and a count: `hover: Some("Trigger")` enters
+    /// once, `hover: Some(("Trigger", 5))` enters five times, leaving between
+    /// each.
+    ///
+    /// The count is how a check reaches the defects a single hover cannot see.
+    /// A pill whose hover appends a shadow layer and never removes it looks
+    /// correct the first time and accumulates from the second, so it is
+    /// invisible both to a check that hovers once and to anyone who does not
+    /// happen to hover twice by hand. Leaving between entries is the part that
+    /// matters: hovering the same node twice with no departure is one hover as
+    /// far as the renderer is concerned, and the defect lives in the
+    /// enter/leave pair.
+    ///
+    /// Whatever the count, the harness compares the tree before the first
+    /// entry with the tree after the last and fails when the extra entries left
+    /// nodes behind, so the abuse comes with its own assertion rather than
+    /// needing one written alongside.
+    pub hover: Option<Hover>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
     /// Focus this named text field and enter [`text`](Self::text).
@@ -227,6 +291,13 @@ pub struct Check {
     pub key_on: Option<String>,
     /// The second named node for a relative-position expectation.
     pub compare: Option<String>,
+    /// Target size for [`ExpectSize`](Expect::ExpectSize), as `WxH`.
+    ///
+    /// Either side may be empty to leave that axis unasserted: `x24` asserts
+    /// height alone, which is the common case for a control whose width is
+    /// content-driven.
+    #[serde(default)]
+    pub expect_size: Option<String>,
     /// Additional controls covered by this same rendered contract.
     ///
     /// Use this only for a repeated family produced from one component and
@@ -555,6 +626,54 @@ pub fn verdict(
         }
         Expect::TargetPaints => {
             return Err("TargetPaints must be resolved by the live QA runner".to_owned());
+        }
+        Expect::ExpectSize => {
+            let want = check
+                .expect_size
+                .as_deref()
+                .ok_or_else(|| "ExpectSize requires expect_size".to_owned())?;
+            let node = found
+                .iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| format!("no painted node matching {:?}", check.subject))?;
+            let box_ = node.bounds.expect("painted nodes have bounds");
+            let (want_w, want_h) = want.split_once('x').ok_or_else(|| {
+                format!("expect_size {want:?} is not WxH; use `190x24`, `x24` or `190x`")
+            })?;
+
+            for (axis, spec, actual) in
+                [("width", want_w, box_[2]), ("height", want_h, box_[3])]
+            {
+                let spec = spec.trim();
+                if spec.is_empty() {
+                    continue;
+                }
+                // A pixel of slack, because layout rounds and a control that
+                // asks for 24 can legitimately resolve to 23.6.
+                const SLACK: f64 = 1.0;
+                let (compare, number) = match spec.strip_prefix("<=") {
+                    Some(rest) => ("at most", rest),
+                    None => match spec.strip_prefix('=') {
+                        Some(rest) => ("exactly", rest),
+                        None => ("at least", spec),
+                    },
+                };
+                let target: f64 = number
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("expect_size {axis} {number:?} is not a number"))?;
+                let ok = match compare {
+                    "at most" => actual <= target + SLACK,
+                    "exactly" => (actual - target).abs() <= SLACK,
+                    _ => actual >= target - SLACK,
+                };
+                if !ok {
+                    return Err(format!(
+                        "{:?} is {actual:.0}px {axis}, expected {compare} {target:.0}",
+                        check.subject
+                    ));
+                }
+            }
         }
         Expect::Above => {
             let compare = check
@@ -894,6 +1013,7 @@ mod tests {
             key: Some("Right".into()),
             key_on: Some("Output level".into()),
             compare: None,
+            expect_size: None,
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
