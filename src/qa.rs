@@ -1342,8 +1342,22 @@ mod tests {
         check.subject = "button:Rename project ".into();
         check.expect = Expect::FamilyChanges;
 
-        assert!(verdict(&check, &[first.clone()], &[second.clone()]).is_ok());
-        assert!(verdict(&check, &[first.clone()], &[first.clone()]).is_err());
+        assert!(
+            verdict(
+                &check,
+                std::slice::from_ref(&first),
+                std::slice::from_ref(&second)
+            )
+            .is_ok()
+        );
+        assert!(
+            verdict(
+                &check,
+                std::slice::from_ref(&first),
+                std::slice::from_ref(&first)
+            )
+            .is_err()
+        );
         second.bounds = Some([0.0, 0.0, 0.0, 0.0]);
         assert!(verdict(&check, &[first], &[second]).is_err());
     }
