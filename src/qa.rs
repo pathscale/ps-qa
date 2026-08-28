@@ -329,6 +329,13 @@ pub struct Check {
     /// leaves between entries exactly like [`hover`](Self::hover).
     #[serde(default)]
     pub after_prepare_hover: Option<Hover>,
+    /// Scroll this semantic region into view before a rendered baseline.
+    ///
+    /// Deferred application sections commonly expose a header before their
+    /// body. Revealing that header is an observation/precondition, not a fake
+    /// click, and it lets the app mount the subject before its first hover.
+    #[serde(default)]
+    pub reveal_before_capture: Option<String>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
     /// Focus this named text field and enter [`text`](Self::text).
@@ -1161,6 +1168,15 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_reveal_a_region_before_their_first_capture() {
+        let check = parse("reveal_before_capture:Some(\"heading:Appearance\"),");
+        assert_eq!(
+            check.reveal_before_capture.as_deref(),
+            Some("heading:Appearance")
+        );
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -1192,6 +1208,7 @@ mod tests {
             prepare_key: None,
             hover: None,
             after_prepare_hover: None,
+            reveal_before_capture: None,
             click: None,
             type_into: None,
             text: None,

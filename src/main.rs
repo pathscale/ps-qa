@@ -1340,24 +1340,7 @@ async fn repeat_hover(
     leave_after: bool,
 ) -> std::result::Result<(), String> {
     let want = hover.target();
-    let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
-    let node_id = tree
-        .nodes
-        .iter()
-        .find(|node| {
-            selector_matches_node(node, want)
-                && node.visible
-                && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
-        })
-        .map(|node| node.id)
-        .ok_or_else(|| format!("could not hover {want:?}: no visible, sized matching node"))?;
-
-    client
-        .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-            node_id,
-        }))
-        .await
-        .map_err(|error| error.to_string())?;
+    let node_id = scroll_hover_target_into_view(client, want).await?;
 
     for turn in 0..hover.times() {
         if turn > 0
@@ -1392,6 +1375,69 @@ async fn repeat_hover(
     }
 
     Ok(())
+}
+
+/// Put a future hover target in its final viewport position without entering it.
+///
+/// Pixel checks must do this before their baseline capture. Letting the hover
+/// helper scroll after that capture compares two viewport positions and reports
+/// movement as a paint regression.
+async fn scroll_hover_target_into_view(
+    client: &mut Client,
+    want: &str,
+) -> std::result::Result<u64, String> {
+    let deadline = tokio::time::Instant::now() + check_timeout(900);
+    let mut previous = None;
+    let mut stable = 0_u8;
+    let (node_id, bounds, viewport) = loop {
+        let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
+        let viewport = viewport_of(&tree);
+        let candidate = tree.nodes.iter().find_map(|node| {
+            (selector_matches_node(node, want)
+                && node.visible
+                && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
+            .then_some((
+                node.id,
+                node.bounds.expect("a sized hover target has bounds"),
+            ))
+        });
+        let candidate_id = candidate.map(|(id, _)| id);
+        if candidate_id.is_some() && candidate_id == previous {
+            stable = stable.saturating_add(1);
+        } else {
+            previous = candidate_id;
+            stable = u8::from(candidate_id.is_some());
+        }
+        if stable >= 3 {
+            let (id, bounds) = candidate.expect("a stable hover target is present");
+            break (id, bounds, viewport);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "could not hover {want:?}: no visible, sized matching node"
+            ));
+        }
+        // A missing target may be behind a requestAnimationFrame-driven lazy
+        // mount. Polling that path at frame cadence can monopolise the control
+        // loop and prevent the very frame that reveals it. Once present, use
+        // frame cadence to prove the node id is stable before acting.
+        tokio::time::sleep(Duration::from_millis(if candidate_id.is_some() {
+            16
+        } else {
+            50
+        }))
+        .await;
+    };
+
+    if offscreen(bounds, viewport) {
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+                node_id,
+            }))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(node_id)
 }
 
 /// Capture one declared rendered region through the renderer's own paint path.
@@ -2169,6 +2215,10 @@ async fn run_qa(
                 pixel_outcome = Some(measured);
             } else if check.expect == qa::Expect::PixelsHoldAfterHover {
                 let measured = async {
+                    if let Some(reveal) = check.reveal_before_capture.as_deref() {
+                        scroll_hover_target_into_view(client, reveal).await?;
+                    }
+                    scroll_hover_target_into_view(client, &check.subject).await?;
                     park_pointer(client).await?;
                     let before = capture_stable_region(client, &check.subject).await?;
                     repeat_hover(client, hover, true).await?;
@@ -5866,6 +5916,7 @@ mod tests {
             prepare_key: None,
             hover: None,
             after_prepare_hover: None,
+            reveal_before_capture: None,
             click: click.map(str::to_owned),
             type_into: None,
             text: None,
