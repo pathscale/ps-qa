@@ -398,14 +398,54 @@ pub fn checks(dir: Option<&std::path::Path>) -> Result<Vec<Check>, String> {
     files.sort();
 
     let mut all = Vec::new();
+    let mut ids = HashMap::new();
     for file in files {
         let text = std::fs::read_to_string(&file)
             .map_err(|error| format!("could not read {}: {error}", file.display()))?;
         let group: Vec<Check> = ron::from_str(&text)
             .map_err(|error| format!("could not parse {}: {error}", file.display()))?;
+        for check in &group {
+            validate_check(check, &file, &mut ids)?;
+        }
         all.extend(group);
     }
     Ok(all)
+}
+
+fn validate_check(
+    check: &Check,
+    file: &std::path::Path,
+    ids: &mut HashMap<String, std::path::PathBuf>,
+) -> Result<(), String> {
+    if let Some(previous) = ids.insert(check.id.clone(), file.to_path_buf()) {
+        return Err(format!(
+            "duplicate check id {:?} in {} (already declared in {})",
+            check.id,
+            file.display(),
+            previous.display()
+        ));
+    }
+
+    if check.expect == Expect::Vanishes
+        && check.prepare_key.is_some()
+        && check.prepare_unless.as_deref() == Some(check.subject.as_str())
+        && check.click.is_none()
+        && check.key.is_none()
+        && check.type_into.is_none()
+    {
+        return Err(format!(
+            concat!(
+                "{}: check {:?} can pass without opening {:?}: prepare_key replaces prepare ",
+                "activation and is skipped when prepare_unless already paints; open with ",
+                "prepare, then send the dismiss key with key and key_on"
+            ),
+            file.display(),
+            check.id,
+            check.subject
+        ));
+    }
+
+    Ok(())
 }
 
 fn matching<'a>(nodes: &'a [SemanticNode], want: &str) -> Vec<&'a SemanticNode> {
@@ -961,9 +1001,12 @@ pub fn tally<'a>(results: &[(&'a Check, Result<(), String>)]) -> HashMap<&'a str
 #[cfg(test)]
 mod tests {
     use super::{
-        Check, Expect, action_description, name_changed, selection_changed, value_changed, verdict,
+        Check, Expect, action_description, name_changed, selection_changed, validate_check,
+        value_changed, verdict,
     };
     use blitz_control_protocol::SemanticNode;
+    use std::collections::HashMap;
+    use std::path::Path;
 
     fn parse(extra: &str) -> Check {
         let ron = format!(
@@ -1016,6 +1059,34 @@ mod tests {
             action_description(&check),
             "prepare-key \"ArrowDown\" on \"Menu\", activate \"Save\""
         );
+    }
+
+    #[test]
+    fn duplicate_check_ids_are_rejected_before_a_run() {
+        let check = parse("");
+        let mut ids = HashMap::new();
+        validate_check(&check, Path::new("first.ron"), &mut ids).expect("first id is unique");
+        let error = validate_check(&check, Path::new("second.ron"), &mut ids)
+            .expect_err("duplicate id must fail");
+        assert!(error.contains("duplicate check id \"action\""));
+        assert!(error.contains("first.ron"));
+        assert!(error.contains("second.ron"));
+    }
+
+    #[test]
+    fn a_dismissal_cannot_pass_by_sending_prepare_key_to_a_closed_subject() {
+        let mut check = parse(
+            "prepare:Some(\"Menu\"),prepare_unless:Some(\"menuitem:First\"),\
+             prepare_key:Some(\"Escape\"),",
+        );
+        check.click = None;
+        check.subject = "menuitem:First".into();
+        check.expect = Expect::Vanishes;
+
+        let error = validate_check(&check, Path::new("menu.ron"), &mut HashMap::new())
+            .expect_err("closed-menu false green must fail validation");
+        assert!(error.contains("can pass without opening"));
+        assert!(error.contains("key and key_on"));
     }
 
     #[test]
