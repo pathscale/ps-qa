@@ -119,31 +119,20 @@ async fn paint(client: &mut Client, want: &str, min_area: f64) -> Result<()> {
 
     let bounds: HashMap<u64, (f64, f64, f64, f64)> = snapshot
         .layout
-        .as_ref()
-        .and_then(|value| value.as_array())
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    let id = row.get("nodeId")?.as_u64()?;
-                    let read = |key: &str, index: usize| {
-                        row.get("bounds")
-                            .and_then(|b| b.get(key).or_else(|| b.get(index)))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0)
-                    };
-                    Some((
-                        id,
-                        (
-                            read("x", 0),
-                            read("y", 1),
-                            read("width", 2),
-                            read("height", 3),
-                        ),
-                    ))
-                })
-                .collect()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| {
+            (
+                row.node_id,
+                (
+                    row.bounds.x,
+                    row.bounds.y,
+                    row.bounds.width,
+                    row.bounds.height,
+                ),
+            )
         })
-        .unwrap_or_default();
+        .collect();
 
     let nodes = snapshot
         .dom
@@ -233,7 +222,6 @@ async fn transcript(client: &mut Client) -> Result<()> {
     let rows = snapshot
         .layout
         .as_ref()
-        .and_then(|value| value.as_array())
         .ok_or_else(|| eyre::eyre!("snapshot omitted layout rows"))?;
     let conversation = nodes
         .iter()
@@ -268,32 +256,20 @@ async fn transcript(client: &mut Client) -> Result<()> {
             ))
         })
         .collect();
-    let layout: HashMap<u64, &serde_json::Value> = rows
-        .iter()
-        .filter_map(|row| Some((row.get("nodeId")?.as_u64()?, row)))
-        .collect();
+    let layout: HashMap<u64, &blitz_control_protocol::LayoutDiagnosticRow> =
+        rows.iter().map(|row| (row.node_id, row)).collect();
     let conversation_row = layout
         .get(&conversation)
         .ok_or_else(|| eyre::eyre!("configured transcript region has no layout row"))?;
-    let pair = |row: &serde_json::Value, field: &str, index: usize| {
-        row.get(field)
-            .and_then(|value| value.get(index))
-            .and_then(|value| value.as_f64())
-            .unwrap_or(f64::NAN)
-    };
-    let bounds = conversation_row
-        .get("bounds")
-        .ok_or_else(|| eyre::eyre!("configured transcript region has no bounds"))?;
-    let viewport_bottom = bounds.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
-        + bounds.get(3).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+    let viewport_bottom = conversation_row.bounds.y + conversation_row.bounds.height;
     println!(
         "transcript id={conversation} top={:.1} bottom={viewport_bottom:.1} scrollTop={:.1} max={:.1} clientHeight={:.1} scrollHeight={:.1} gapToMax={:.1}",
-        bounds.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN),
-        pair(conversation_row, "scrollOffset", 1),
-        pair(conversation_row, "scrollRange", 1),
-        pair(conversation_row, "clientSize", 1),
-        pair(conversation_row, "scrollSize", 1),
-        pair(conversation_row, "scrollRange", 1) - pair(conversation_row, "scrollOffset", 1),
+        conversation_row.bounds.y,
+        conversation_row.scroll_offset.y,
+        conversation_row.scroll_range.height,
+        conversation_row.client_size.height,
+        conversation_row.scroll_size.height,
+        conversation_row.scroll_range.height - conversation_row.scroll_offset.y,
     );
     let is_descendant = |mut id: u64| {
         for _ in 0..512 {
@@ -313,9 +289,8 @@ async fn transcript(client: &mut Client) -> Result<()> {
             if *id == conversation || !is_descendant(*id) {
                 return None;
             }
-            let box_ = row.get("bounds")?;
-            let top = box_.get(1)?.as_f64()?;
-            let height = box_.get(3)?.as_f64()?;
+            let top = row.bounds.y;
+            let height = row.bounds.height;
             Some((top + height, *id, top))
         })
         .collect();
@@ -392,24 +367,18 @@ async fn spill(client: &mut Client, axis: &str, tolerance: f64) -> Result<()> {
         match answer.response {
             DebugResponse::Snapshot(layout) => layout
                 .layout
-                .as_ref()
-                .and_then(|value| value.as_array())
-                .map(|rows| {
-                    rows.iter()
-                        .filter_map(|row| {
-                            let id = row.get("nodeId")?.as_u64()?;
-                            // The *range*, not the offset. A container that can
-                            // scroll on an axis is one whose content is meant to
-                            // exceed its box on that axis, whether or not it
-                            // happens to be scrolled right now.
-                            let range = row.get("scrollRange")?;
-                            let x = range.get(0)?.as_f64()?;
-                            let y = range.get(1)?.as_f64()?;
-                            Some((id, (x, y)))
-                        })
-                        .collect()
+                .unwrap_or_default()
+                .into_iter()
+                // The *range*, not the offset. A container that can scroll on
+                // an axis is one whose content is meant to exceed its box on
+                // that axis, whether or not it is currently scrolled.
+                .map(|row| {
+                    (
+                        row.node_id,
+                        (row.scroll_range.width, row.scroll_range.height),
+                    )
                 })
-                .unwrap_or_default(),
+                .collect(),
             // Without offsets this reports scrolled content as spill, which is
             // wrong but not silently wrong: say so rather than pretend.
             _ => {
@@ -5242,24 +5211,15 @@ async fn main() -> Result<()> {
             };
 
             let mut boxes: HashMap<u64, (f64, f64, f64, f64)> = HashMap::new();
-            if let Some(rows) = snapshot.layout.as_ref().and_then(|v| v.as_array()) {
+            if let Some(rows) = snapshot.layout {
                 for row in rows {
-                    let Some(id) = row.get("nodeId").and_then(|v| v.as_u64()) else {
-                        continue;
-                    };
-                    let read = |key: &str, index: usize| {
-                        row.get("bounds")
-                            .and_then(|b| b.get(key).or_else(|| b.get(index)))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0)
-                    };
                     boxes.insert(
-                        id,
+                        row.node_id,
                         (
-                            read("x", 0),
-                            read("y", 1),
-                            read("width", 2),
-                            read("height", 3),
+                            row.bounds.x,
+                            row.bounds.y,
+                            row.bounds.width,
+                            row.bounds.height,
                         ),
                     );
                 }
