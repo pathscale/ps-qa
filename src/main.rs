@@ -28,6 +28,7 @@ mod app;
 mod audit;
 mod cli;
 mod inspector;
+mod layout_report;
 mod qa;
 mod reach;
 mod report;
@@ -36,6 +37,7 @@ mod sweep;
 // at run time. See `qa::checks`.
 
 use inspector::Client;
+use layout_report::layout;
 
 /// Inter-event delay. **Leave it at 0 when measuring a ceiling.** At the 1/60
 /// default the harness sets the cadence and the reported frame interval
@@ -70,136 +72,6 @@ async fn metrics(client: &mut Client) -> Result<RendererMetrics> {
         DebugResponse::Metrics(metrics) => Ok(metrics),
         other => bail!("asked for metrics, got {other:?}"),
     }
-}
-
-/// The whole tree. `max_depth` is snake_case inside the variant even though the
-/// frame wrapper is camelCase, which is the trap the shared types remove.
-/// Print the live box of every named node, optionally filtered by name.
-///
-/// The reason this exists: a layout complaint that cannot be reproduced from
-/// the markup is answered by the boxes the running app actually computed, not
-/// by another screenshot. `include_layout` has been in the diagnostics snapshot
-/// all along; nothing exposed it.
-async fn layout(client: &mut Client, want: &str) -> Result<()> {
-    let answer = client
-        .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
-            include_dom: true,
-            include_layout: true,
-            include_computed_style: false,
-        }))
-        .await?;
-    let DebugResponse::Snapshot(snapshot) = answer.response else {
-        bail!("asked for a layout snapshot, got {:?}", answer.response);
-    };
-    let bounds: HashMap<u64, serde_json::Value> = snapshot
-        .layout
-        .as_ref()
-        .and_then(|value| value.as_array())
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    let id = row.get("nodeId")?.as_u64()?;
-                    Some((id, row.get("bounds")?.clone()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let nodes = snapshot
-        .dom
-        .as_ref()
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut shown = 0usize;
-    for node in &nodes {
-        let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let role = node.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        if !want.is_empty() && !name.contains(want) && !role.contains(want) {
-            continue;
-        }
-        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        let Some(box_) = bounds.get(&id) else {
-            continue;
-        };
-        // `bounds` arrives as `[x, y, width, height]`. Reading it as an object
-        // with named keys returned `None` for every one of them, and the
-        // fallback was `f64::NAN`, so this printed four NaNs per row for every
-        // node and never said why: a silently broken instrument, which is the
-        // one thing a measurement tool must not be. Both shapes are accepted
-        // now, so a protocol that grows named fields does not break it again.
-        let read = |key: &str, index: usize| {
-            box_.get(key)
-                .or_else(|| box_.get(index))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(f64::NAN)
-        };
-        let row = snapshot
-            .layout
-            .as_ref()
-            .and_then(|value| value.as_array())
-            .and_then(|rows| {
-                rows.iter()
-                    .find(|row| row.get("nodeId").and_then(|value| value.as_u64()) == Some(id))
-            });
-        let pair = |field: &str, index: usize| {
-            row.and_then(|row| row.get(field))
-                .and_then(|value| value.get(index))
-                .and_then(|value| value.as_f64())
-                .unwrap_or(f64::NAN)
-        };
-        // `scroll=` was labelled `content=` while printing `scrollSize`, which
-        // is the scrollable extent and not the content box. Both are named for
-        // what they are now, and the real content box is reported beside the
-        // border and padding that separate the two.
-        //
-        // border/padding read `t,r,b,l`, CSS shorthand order. A box that came
-        // out taller than its declared height is then arithmetic rather than
-        // inference: content + padding + border is the outer height, and
-        // whichever term is unexpected names the property to go and look at.
-        println!(
-            "{:>6}  {:<16} {:>8.1} {:>8.1} {:>8.1} {:>8.1}  scroll={:.1},{:.1} range={:.1},{:.1} \
-             border-box={:.1},{:.1} content-box={:.1},{:.1} \
-             border={:.1},{:.1},{:.1},{:.1} padding={:.1},{:.1},{:.1},{:.1} \
-             scrollable={:.1},{:.1}  {}",
-            id,
-            role,
-            read("x", 0),
-            read("y", 1),
-            read("width", 2),
-            read("height", 3),
-            pair("scrollOffset", 0),
-            pair("scrollOffset", 1),
-            pair("scrollRange", 0),
-            pair("scrollRange", 1),
-            pair("clientSize", 0),
-            pair("clientSize", 1),
-            pair("contentSize", 0),
-            pair("contentSize", 1),
-            pair("border", 0),
-            pair("border", 1),
-            pair("border", 2),
-            pair("border", 3),
-            pair("padding", 0),
-            pair("padding", 1),
-            pair("padding", 2),
-            pair("padding", 3),
-            pair("scrollSize", 0),
-            pair("scrollSize", 1),
-            name.chars().take(60).collect::<String>()
-        );
-        shown += 1;
-    }
-    if shown == 0 {
-        println!(
-            "no named node matched {want:?} ({} in the tree)",
-            nodes.len()
-        );
-    }
-    Ok(())
 }
 
 /// What the renderer resolved every visible node to actually paint.
