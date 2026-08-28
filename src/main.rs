@@ -1937,17 +1937,7 @@ async fn run_qa(
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
-        /*
-         * Before any hovering, so the repeated hover below has something to be
-         * compared against. Every check that hovers gets an accumulation
-         * assertion for free out of this pair, with nothing declared in the
-         * check file.
-         */
-        let untouched = if check.hover.is_some() {
-            Some(inspect(client).await?.0)
-        } else {
-            None
-        };
+        let mut nodes_after_first_hover = None;
 
         client.set_request_timeout(check_timeout(900));
 
@@ -1959,7 +1949,27 @@ async fn run_qa(
         if open_error.is_none()
             && let Some(hover) = check.hover.as_ref()
         {
-            if let Err(error) = repeat_hover(client, hover, false).await {
+            let hovered = if hover.times() > 1 {
+                let first = qa::Hover::Once(hover.target().to_owned());
+                match repeat_hover(client, &first, false).await {
+                    Err(error) => Err(error),
+                    Ok(()) => {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        nodes_after_first_hover = Some(inspect(client).await?.0.nodes.len());
+                        match park_pointer(client).await {
+                            Err(error) => Err(error),
+                            Ok(()) => {
+                                let remaining =
+                                    qa::Hover::Times(hover.target().to_owned(), hover.times() - 1);
+                                repeat_hover(client, &remaining, false).await
+                            }
+                        }
+                    }
+                }
+            } else {
+                repeat_hover(client, hover, false).await
+            };
+            if let Err(error) = hovered {
                 open_error = Some(error);
             } else if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
                 let _ = wait_for_arrival(client, None, next).await?;
@@ -2088,36 +2098,27 @@ async fn run_qa(
         }
 
         /*
-         * Nothing accumulated across the repeated hover.
+         * Nothing accumulated across explicitly repeated hover cycles.
          *
-         * Entering a control can legitimately mount something - that is what a
-         * hover-revealed action is - so this cannot demand the count be
-         * unchanged. What it can demand is that the *second* hover adds nothing
-         * the first did not, which is exactly the shape of the defect: a pill
-         * whose hover appends a shadow layer and never removes it grows by one
-         * node per hover, for ever.
+         * Entering a control can legitimately mount something, so compare the
+         * first completed hover with the final completed hover. Both snapshots
+         * have the same authored pointer state. A single-hover check has no
+         * second state to compare and must not treat unrelated asynchronous
+         * rendering as a leak.
          *
-         * Checked here rather than declared per check, because an assertion
-         * somebody has to remember to write is one that is missing from every
-         * check written before anyone knew the defect existed.
+         * Checks request repetition explicitly because it is deliberate abuse,
+         * but the accumulation assertion comes with that request automatically.
          */
-        if let Some(untouched) = untouched.as_ref()
+        if let Some(after_first) = nodes_after_first_hover
             && open_error.is_none()
         {
-            let (after_hovering, _) = inspect(client).await?;
-            let grew = after_hovering.nodes.len() as i64 - untouched.nodes.len() as i64;
-            if grew > 0 {
-                let (again, _) = inspect(client).await?;
-                let grew_again = again.nodes.len() as i64 - after_hovering.nodes.len() as i64;
-                if grew_again > 0 {
-                    open_error = Some(format!(
-                        "hovering twice left {grew_again} more node(s) behind \
-                         ({} -> {} -> {}); something the hover adds is never removed",
-                        untouched.nodes.len(),
-                        after_hovering.nodes.len(),
-                        again.nodes.len()
-                    ));
-                }
+            let after_repeats = inspect(client).await?.0.nodes.len();
+            let retained = after_repeats as i64 - after_first as i64;
+            if retained > 0 {
+                open_error = Some(format!(
+                    "repeated hover left {retained} more node(s) behind \
+                     ({after_first} -> {after_repeats}); something later entries add is never removed"
+                ));
             }
         }
 
