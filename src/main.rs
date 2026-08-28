@@ -3727,7 +3727,7 @@ async fn reveal_deferred_content(
     surface: &reach::Surface,
     want: &str,
 ) -> Result<usize> {
-    let materialized = materialize_deferred_content(client, surface).await?
+    let materialized = materialize_deferred_content(client, surface, want).await?
         + materialize_paginated_content(client, surface).await?;
     if materialized > 0 {
         let (snapshot, _) = inspect(client).await?;
@@ -3765,22 +3765,26 @@ async fn reveal_deferred_content(
                 node_id: target.0,
             }))
             .await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(75)).await;
     }
     Ok(8)
 }
 
-/// Ask an application-declared search field to mount all deferred rows, then
-/// restore the empty query before the audit reads or activates them.
+/// Ask an application-declared search field to mount the control this check
+/// needs, then restore the unfiltered surface before measuring it.
 async fn materialize_deferred_content(
     client: &mut Client,
     surface: &reach::Surface,
+    want: &str,
 ) -> Result<usize> {
     let Some(field) = surface.reveal_with.as_deref() else {
         return Ok(0);
     };
-    type_text(client, field, "ps-qa reveal deferred content").await?;
+    let query = want.split_once(':').map_or(want, |(_, name)| name);
+    type_text(client, field, query).await?;
+    let _ = wait_for_arrival(client, None, want).await?;
     type_text(client, field, "").await?;
+    tokio::time::sleep(Duration::from_millis(25)).await;
     Ok(2)
 }
 
@@ -4294,7 +4298,7 @@ async fn run_inventory(
             });
             continue;
         }
-        materialize_deferred_content(client, surface).await?;
+        materialize_deferred_content(client, surface, "").await?;
         materialize_paginated_content(client, surface).await?;
         let rows_hovered = hover_all_rows(client).await?;
         let (tree, _) = inspect(client).await?;
@@ -4787,7 +4791,7 @@ async fn run_cover(
             println!("- {:<10} left during expansion, skipping\n", surface.name);
             continue;
         }
-        materialize_deferred_content(client, surface).await?;
+        materialize_deferred_content(client, surface, "").await?;
         materialize_paginated_content(client, surface).await?;
         let hovered = hover_all_rows(client).await?;
 
