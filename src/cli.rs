@@ -37,6 +37,17 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+fn parse_timeout_scale(value: &str) -> Result<f64, String> {
+    let scale = value
+        .parse::<f64>()
+        .map_err(|_| "timeout scale must be a number".to_owned())?;
+    if scale.is_finite() && (1.0..=10.0).contains(&scale) {
+        Ok(scale)
+    } else {
+        Err("timeout scale must be between 1 and 10".to_owned())
+    }
+}
+
 /// Whether the checks of one component share a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum CheckMode {
@@ -72,6 +83,17 @@ pub struct Cli {
     /// describes the harness rather than the application.
     #[arg(long, global = true, default_value_t = 1.0 / 60.0)]
     pub pace: f64,
+
+    /// Multiply interaction and rendered-outcome deadlines on an overloaded
+    /// runner. The default remains the strict local latency contract; CI must
+    /// opt in explicitly rather than silently weakening every check.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 1.0,
+        value_parser = parse_timeout_scale
+    )]
+    pub timeout_scale: f64,
 
     /// Report the node each step addressed, and why a step chose it.
     #[arg(long, global = true)]
@@ -471,6 +493,11 @@ static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// reason as `TRACE`.
 static PACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Multiplier for interaction and rendered-outcome deadlines. Like `PACE`, it
+/// is set once before any check runs and read several frames below the CLI.
+static TIMEOUT_SCALE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1.0_f64.to_bits());
+
 /// Record whether tracing was asked for. Called once, from `main`.
 pub fn set_trace(on: bool) {
     TRACE.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -479,6 +506,11 @@ pub fn set_trace(on: bool) {
 /// Record the inter-event delay. Called once, from `main`.
 pub fn set_pace(seconds: f64) {
     PACE.store(seconds.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Record the validated deadline multiplier. Called once, from `main`.
+pub fn set_timeout_scale(scale: f64) {
+    TIMEOUT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `--app <path>`, if one was given. Set once, from `main`, for the same reason
@@ -501,6 +533,11 @@ pub fn pace() -> f64 {
     f64::from_bits(PACE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// The interaction and rendered-outcome deadline multiplier.
+pub fn timeout_scale() -> f64 {
+    f64::from_bits(TIMEOUT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Whether to name the node a step addressed, and why it chose it.
 pub fn trace() -> bool {
     TRACE.load(std::sync::atomic::Ordering::Relaxed)
@@ -517,5 +554,19 @@ impl Command {
             self,
             Command::Metrics | Command::Watch { .. } | Command::Frames | Command::Tree
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_timeout_scale;
+
+    #[test]
+    fn timeout_scale_is_explicit_and_bounded() {
+        assert_eq!(parse_timeout_scale("1").unwrap(), 1.0);
+        assert_eq!(parse_timeout_scale("2.5").unwrap(), 2.5);
+        assert!(parse_timeout_scale("0.5").is_err());
+        assert!(parse_timeout_scale("11").is_err());
+        assert!(parse_timeout_scale("not-a-number").is_err());
     }
 }

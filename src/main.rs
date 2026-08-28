@@ -45,6 +45,15 @@ fn pace() -> Duration {
     Duration::from_secs_f64(cli::pace().max(0.0))
 }
 
+/// A fixed check budget, optionally widened by an explicit runner multiplier.
+/// Poll cadence remains unchanged so this affects only how long ps-qa waits,
+/// never what it accepts as a rendered outcome.
+fn check_timeout(milliseconds: u64) -> Duration {
+    Duration::from_secs_f64(
+        Duration::from_millis(milliseconds).as_secs_f64() * cli::timeout_scale(),
+    )
+}
+
 async fn sleep_pace() {
     let pace = pace();
     if !pace.is_zero() {
@@ -1393,7 +1402,7 @@ async fn wait_for_arrival(
     destination: Option<&reach::Surface>,
     want_here: &str,
 ) -> Result<bool> {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
+    let deadline = tokio::time::Instant::now() + check_timeout(900);
     let mut painted_streak = 0;
     loop {
         let (tree, _) = inspect(client).await?;
@@ -2028,7 +2037,8 @@ async fn run_qa(
                         open_error = Some(format!("could not open {want:?}: {error}"));
                     } else if !wait_for_arrival(client, destination, want_here).await? {
                         open_error = Some(format!(
-                            "could not open {want:?}: destination did not paint within 900ms"
+                            "could not open {want:?}: destination did not paint within {}ms",
+                            check_timeout(900).as_millis()
                         ));
                     }
                 }
@@ -2098,7 +2108,7 @@ async fn run_qa(
             None
         };
 
-        client.set_request_timeout(Duration::from_millis(900));
+        client.set_request_timeout(check_timeout(900));
 
         // Hover first: the row actions do not exist until `pointerenter`.
         //
@@ -2417,11 +2427,10 @@ async fn run_qa(
         // Preparation is not the outcome latency. Opening an editor, hovering
         // its row, and filling a field establish the precondition; the final
         // click, value commit, or key is the user action whose rendered result
-        // must arrive inside the fixed verdict budget. Hosted macOS runners
-        // add roughly 100ms of scheduling jitter around otherwise completed
-        // paints, so keep the guard strict without failing 1.1s outcomes.
+        // must arrive inside the verdict budget. An overloaded runner can opt
+        // into a visible multiplier; the default remains the strict contract.
         let elapsed = check_started.unwrap_or_else(Instant::now).elapsed();
-        let verdict_budget = Duration::from_millis(1_250);
+        let verdict_budget = check_timeout(1_250);
         if elapsed > verdict_budget {
             let timing = format!(
                 "check exceeded {}ms ({:.0}ms)",
@@ -2547,8 +2556,7 @@ async fn settle_for_outcome(
     action_target: Option<&str>,
     action_node_id: Option<u64>,
 ) -> Result<AgentSnapshot> {
-    const OUTCOME_TIMEOUT: Duration = Duration::from_millis(900);
-    let deadline = tokio::time::Instant::now() + OUTCOME_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + check_timeout(900);
     loop {
         let (after, _) = inspect(client).await?;
         if outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok()
@@ -4964,15 +4972,15 @@ async fn run_cover(
              * control in the error and stop before a transport failure is
              * multiplied by the rest of the plan.
              */
-            let activation =
-                tokio::time::timeout(Duration::from_millis(900), click_by_id(client, id))
-                    .await
-                    .map_err(|_| {
-                        eyre!(
-                            "activation exceeded 900ms for {name:?} (id {id}) on {:?}",
-                            surface.name
-                        )
-                    })?;
+            let activation = tokio::time::timeout(check_timeout(900), click_by_id(client, id))
+                .await
+                .map_err(|_| {
+                    eyre!(
+                        "activation exceeded {}ms for {name:?} (id {id}) on {:?}",
+                        check_timeout(900).as_millis(),
+                        surface.name
+                    )
+                })?;
             if let Err(error) = activation {
                 bail!(
                     "could not activate {name:?} (id {id}) on {:?}; stopping the sweep: {error}",
@@ -5124,6 +5132,7 @@ async fn main() -> Result<()> {
     let cli = <cli::Cli as clap::Parser>::parse();
     cli::set_trace(cli.trace);
     cli::set_pace(cli.pace);
+    cli::set_timeout_scale(cli.timeout_scale);
     cli::set_app_profile(cli.app.clone());
 
     // The inventory reads the check list, not the application, so it answers
