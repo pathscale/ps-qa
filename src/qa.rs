@@ -395,6 +395,13 @@ pub struct Check {
     /// rendered action still has to pass the one-second budget.
     #[serde(default)]
     pub settle_after_ms: u64,
+    /// Deadline for this check's rendered outcome.
+    ///
+    /// Ordinary interactions keep the 900ms contract. A declared backend or
+    /// network round trip may opt into a larger explicit budget without
+    /// weakening every button in the sweep.
+    #[serde(default)]
+    pub outcome_timeout_ms: u64,
     /// Run this check only after every ordinary shared-instance outcome.
     ///
     /// A destructive sequence may deliberately remove fixture state that
@@ -1280,6 +1287,7 @@ mod tests {
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
+            outcome_timeout_ms: 0,
             destructive: false,
             subject: "Output level".into(),
             expect: Expect::ValueChanges,

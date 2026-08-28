@@ -1006,9 +1006,9 @@ async fn press_key(
     over: &str,
     require_target: bool,
 ) -> Result<()> {
-    // A key goes to the focused node, so click the container first. Clicking a
-    // scroll container's own body focuses it without activating anything: the
-    // transcript section carries `tabindex="0"` for exactly this.
+    // A key goes to the focused node, so focus the target first without
+    // activating it. This cannot be a click: a button's click is its action,
+    // and setup would submit, delete or fork before the key under test arrived.
     let (snapshot, _) = inspect(client).await?;
     // A control whose only label is `sr-only` reaches the semantic tree with an
     // empty name, so no substring can address it. The slider is one, which is
@@ -1034,7 +1034,7 @@ async fn press_key(
     };
     if let Some(target) = target {
         client
-            .agent(&AgentControlRequest::Act(AgentAction::Click {
+            .agent(&AgentControlRequest::Act(AgentAction::Focus {
                 node_id: target,
             }))
             .await?;
@@ -1251,6 +1251,39 @@ async fn wait_for_arrival(
             || painted_named(&tree.nodes, want_here),
             |surface| reach::on_surface(&tree.nodes, surface),
         );
+        if stable_arrival(&mut painted_streak, arrived) {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Wait for the specific document tab, not merely any document-shaped pane.
+///
+/// Switching between projects leaves the outgoing project surface painted
+/// while the incoming pane reconciles. A generic project marker therefore
+/// reports arrival hundreds of milliseconds too early. Permanent surfaces do
+/// not share that ambiguity and keep the cheaper ordinary arrival path.
+async fn wait_for_navigation_arrival(
+    client: &mut Client,
+    destination: Option<&reach::Surface>,
+    want_here: &str,
+    named_document: bool,
+    document_name: &str,
+) -> Result<bool> {
+    if !named_document {
+        return wait_for_arrival(client, destination, want_here).await;
+    }
+    let deadline = tokio::time::Instant::now() + check_timeout(900);
+    let mut painted_streak = 0;
+    loop {
+        let (tree, _) = inspect(client).await?;
+        let arrived = named_document_is_active(&tree.nodes, document_name)
+            && destination.is_some_and(|surface| reach::on_surface(&tree.nodes, surface))
+            && painted_named(&tree.nodes, want_here);
         if stable_arrival(&mut painted_streak, arrived) {
             return Ok(true);
         }
@@ -1973,7 +2006,15 @@ async fn run_qa(
              * target that may legitimately be collapsed, deferred, or mounted
              * only after hover.
              */
-            let want_here: &str = check.click.as_deref().unwrap_or(&check.subject);
+            let want_here: &str = check
+                .hover
+                .as_ref()
+                .map(qa::Hover::target)
+                .or(check.prepare.as_deref())
+                .or(check.click.as_deref())
+                .or(check.type_into.as_deref())
+                .or(check.key_on.as_deref())
+                .unwrap_or(&check.subject);
             let destination = surface_for_opener(want);
             let named_document = is_named_document_opener(want);
             let (here, _) = inspect(client).await?;
@@ -2017,17 +2058,38 @@ async fn run_qa(
                  * committing to either gesture broke the other set of checks.
                  */
                 let first_click = click_opener_quiet(client, want, named_document).await;
-                let mut there = wait_for_arrival(client, destination, want_here).await?;
+                let mut there = wait_for_navigation_arrival(
+                    client,
+                    destination,
+                    want_here,
+                    named_document,
+                    want,
+                )
+                .await?;
                 // A surface transition can briefly remove the opener before
                 // its replacement paints. Retry the same semantic click after
                 // settling; escalating that transient miss straight to a
                 // document-row double-click skips ordinary button handlers.
                 if !there && first_click.is_err() {
                     let _ = click_named_quiet(client, want).await;
-                    there = wait_for_arrival(client, destination, want_here).await?;
+                    there = wait_for_navigation_arrival(
+                        client,
+                        destination,
+                        want_here,
+                        named_document,
+                        want,
+                    )
+                    .await?;
                 }
                 if !there && open_named(client, want).await.is_ok() {
-                    there = wait_for_arrival(client, destination, want_here).await?;
+                    there = wait_for_navigation_arrival(
+                        client,
+                        destination,
+                        want_here,
+                        named_document,
+                        want,
+                    )
+                    .await?;
                 }
                 if !there {
                     if let Some(home) = reach::profile().home_opener.as_deref() {
@@ -2035,7 +2097,15 @@ async fn run_qa(
                     }
                     if let Err(error) = open_named(client, want).await {
                         open_error = Some(format!("could not open {want:?}: {error}"));
-                    } else if !wait_for_arrival(client, destination, want_here).await? {
+                    } else if !wait_for_navigation_arrival(
+                        client,
+                        destination,
+                        want_here,
+                        named_document,
+                        want,
+                    )
+                    .await?
+                    {
                         open_error = Some(format!(
                             "could not open {want:?}: destination did not paint within {}ms",
                             check_timeout(900).as_millis()
@@ -2467,7 +2537,12 @@ async fn run_qa(
         // must arrive inside the verdict budget. An overloaded runner can opt
         // into a visible multiplier; the default remains the strict contract.
         let elapsed = check_started.unwrap_or_else(Instant::now).elapsed();
-        let verdict_budget = check_timeout(1_250);
+        let declared_outcome = if check.outcome_timeout_ms == 0 {
+            900
+        } else {
+            check.outcome_timeout_ms
+        };
+        let verdict_budget = check_timeout(1_250.max(declared_outcome.saturating_add(250)));
         if elapsed > verdict_budget {
             let timing = format!(
                 "check exceeded {}ms ({:.0}ms)",
@@ -2593,7 +2668,12 @@ async fn settle_for_outcome(
     action_target: Option<&str>,
     action_node_id: Option<u64>,
 ) -> Result<AgentSnapshot> {
-    let deadline = tokio::time::Instant::now() + check_timeout(900);
+    let outcome_ms = if check.outcome_timeout_ms == 0 {
+        900
+    } else {
+        check.outcome_timeout_ms
+    };
+    let deadline = tokio::time::Instant::now() + check_timeout(outcome_ms);
     loop {
         let (after, _) = inspect(client).await?;
         if outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok()
@@ -2669,14 +2749,35 @@ fn arrived_without_navigation(
 /// maps that live state to `selected` rather than asking the runner to remember
 /// which arbitrary action may have changed documents.
 fn named_document_is_active(nodes: &[SemanticNode], want: &str) -> bool {
+    named_document_is_active_with_permanent(nodes, want, &reach::profile().permanent_surfaces)
+}
+
+fn named_document_is_active_with_permanent(
+    nodes: &[SemanticNode],
+    want: &str,
+    permanent_surfaces: &[String],
+) -> bool {
     let tab_name = format!("{want}{want}");
-    nodes.iter().any(|node| {
+    let exact_document_selected = nodes.iter().any(|node| {
         node.role == "button"
             && node.name.eq_ignore_ascii_case(&tab_name)
             && node.selected
             && node.visible
             && painted_bounds(node).is_some()
-    })
+    });
+    let permanent_surface_selected = nodes.iter().any(|node| {
+        node.role == "button"
+            && node.selected
+            && node.visible
+            && painted_bounds(node).is_some()
+            && permanent_surfaces.iter().any(|surface| {
+                node.name.eq_ignore_ascii_case(surface)
+                    || node
+                        .name
+                        .eq_ignore_ascii_case(&format!("{surface}{surface}"))
+            })
+    });
+    exact_document_selected && !permanent_surface_selected
 }
 
 /// Activate a surface opener without confusing a document tab for its Close
@@ -3780,10 +3881,17 @@ async fn materialize_deferred_content(
     let Some(field) = surface.reveal_with.as_deref() else {
         return Ok(0);
     };
+    let (before, _) = inspect(client).await?;
+    let previous = before
+        .nodes
+        .iter()
+        .find(|node| selector_matches_node(node, field))
+        .and_then(|node| node.value.clone())
+        .unwrap_or_default();
     let query = want.split_once(':').map_or(want, |(_, name)| name);
     type_text(client, field, query).await?;
     let _ = wait_for_arrival(client, None, want).await?;
-    type_text(client, field, "").await?;
+    type_text(client, field, &previous).await?;
     tokio::time::sleep(Duration::from_millis(25)).await;
     Ok(2)
 }
@@ -5805,11 +5913,11 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
-        is_pagination_control, name_matches, named_document_is_active, named_document_opener_for,
-        outcome_check_ids, outcome_verdict, pagination_advanced, painted_bounds, painted_named,
-        parse_key_chord, pixels_change, pixels_hold, require_opaque_background,
-        resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
-        stable_arrival,
+        is_pagination_control, name_matches, named_document_is_active,
+        named_document_is_active_with_permanent, named_document_opener_for, outcome_check_ids,
+        outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
+        pixels_change, pixels_hold, require_opaque_background, resolved_action_target,
+        retain_exact_candidates, saved_controls, selector_matches_node, stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -6003,6 +6111,7 @@ mod tests {
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
+            outcome_timeout_ms: 0,
             destructive: false,
             subject: subject.into(),
             expect: Expect::Paints,
@@ -6141,7 +6250,19 @@ mod tests {
         let mut tab = component("Fixture projectFixture project", true, true);
         assert!(!named_document_is_active(&[tab.clone()], "Fixture project"));
         tab.selected = true;
-        assert!(named_document_is_active(&[tab], "Fixture project"));
+        assert!(named_document_is_active(&[tab.clone()], "Fixture project"));
+
+        let permanent_name = "Settings".to_owned();
+        let mut permanent = component(&permanent_name, true, true);
+        permanent.selected = true;
+        assert!(
+            !named_document_is_active_with_permanent(
+                &[tab, permanent],
+                "Fixture project",
+                &[permanent_name],
+            ),
+            "a selected retained document is not in front of a selected permanent surface"
+        );
     }
 
     #[test]
