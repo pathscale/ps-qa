@@ -8,25 +8,13 @@
 
 use std::collections::HashMap;
 
-use blitz_control_protocol::{DebugResponse, DiagnosticsRequest, SnapshotRequest};
+use blitz_control_protocol::{
+    DebugResponse, DiagnosticsRequest, LayoutDiagnosticRow, SnapshotRequest,
+};
 use eyre::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::inspector::Client;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LayoutRow {
-    node_id: u64,
-    bounds: [f64; 4],
-    scroll_offset: [f64; 2],
-    client_size: [f64; 2],
-    scroll_size: [f64; 2],
-    scroll_range: [f64; 2],
-    border: [f64; 4],
-    padding: [f64; 4],
-    content_size: [f64; 2],
-}
 
 #[derive(Debug, Deserialize)]
 struct DomNode {
@@ -35,11 +23,6 @@ struct DomNode {
     role: String,
     #[serde(default)]
     name: String,
-}
-
-fn decode_rows(value: Option<serde_json::Value>) -> Result<Vec<LayoutRow>> {
-    serde_json::from_value(value.unwrap_or_else(|| serde_json::json!([])))
-        .wrap_err("renderer returned an invalid layout diagnostic schema")
 }
 
 fn decode_nodes(value: Option<serde_json::Value>) -> Result<Vec<DomNode>> {
@@ -63,9 +46,10 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
         bail!("asked for a layout snapshot, got {:?}", answer.response);
     };
 
-    let rows = decode_rows(snapshot.layout)?;
+    let rows = snapshot.layout.unwrap_or_default();
     let nodes = decode_nodes(snapshot.dom)?;
-    let rows: HashMap<u64, LayoutRow> = rows.into_iter().map(|row| (row.node_id, row)).collect();
+    let rows: HashMap<u64, LayoutDiagnosticRow> =
+        rows.into_iter().map(|row| (row.node_id, row)).collect();
 
     let mut shown = 0usize;
     for node in &nodes {
@@ -75,15 +59,6 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
         let Some(row) = rows.get(&node.id) else {
             continue;
         };
-        let [x, y, width, height] = row.bounds;
-        let [scroll_x, scroll_y] = row.scroll_offset;
-        let [range_width, range_height] = row.scroll_range;
-        let [client_width, client_height] = row.client_size;
-        let [content_width, content_height] = row.content_size;
-        let [border_top, border_right, border_bottom, border_left] = row.border;
-        let [padding_top, padding_right, padding_bottom, padding_left] = row.padding;
-        let [scroll_width, scroll_height] = row.scroll_size;
-
         // Border/padding use CSS shorthand order: top, right, bottom, left.
         // Every value below is named and fixed-size; a missing or malformed
         // field fails during decoding instead of silently printing NaN.
@@ -94,28 +69,28 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
              scrollable={:.1},{:.1}  {}",
             node.id,
             node.role,
-            x,
-            y,
-            width,
-            height,
-            scroll_x,
-            scroll_y,
-            range_width,
-            range_height,
-            client_width,
-            client_height,
-            content_width,
-            content_height,
-            border_top,
-            border_right,
-            border_bottom,
-            border_left,
-            padding_top,
-            padding_right,
-            padding_bottom,
-            padding_left,
-            scroll_width,
-            scroll_height,
+            row.bounds.x,
+            row.bounds.y,
+            row.bounds.width,
+            row.bounds.height,
+            row.scroll_offset.x,
+            row.scroll_offset.y,
+            row.scroll_range.width,
+            row.scroll_range.height,
+            row.client_size.width,
+            row.client_size.height,
+            row.content_size.width,
+            row.content_size.height,
+            row.border.top,
+            row.border.right,
+            row.border.bottom,
+            row.border.left,
+            row.padding.top,
+            row.padding.right,
+            row.padding.bottom,
+            row.padding.left,
+            row.scroll_size.width,
+            row.scroll_size.height,
             node.name.chars().take(60).collect::<String>()
         );
         shown += 1;
@@ -131,22 +106,10 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_nodes, decode_rows};
+    use super::decode_nodes;
 
     #[test]
-    fn layout_wire_shape_decodes_to_named_fields() {
-        let rows = decode_rows(Some(serde_json::json!([{
-            "nodeId": 7,
-            "bounds": [1.0, 2.0, 30.0, 40.0],
-            "scrollOffset": [3.0, 4.0],
-            "clientSize": [30.0, 40.0],
-            "scrollSize": [50.0, 60.0],
-            "scrollRange": [20.0, 20.0],
-            "border": [1.0, 2.0, 3.0, 4.0],
-            "padding": [5.0, 6.0, 7.0, 8.0],
-            "contentSize": [10.0, 11.0]
-        }])))
-        .unwrap();
+    fn dom_wire_shape_decodes_once_at_the_command_boundary() {
         let nodes = decode_nodes(Some(serde_json::json!([{
             "id": 7,
             "role": "button",
@@ -154,24 +117,6 @@ mod tests {
         }])))
         .unwrap();
 
-        assert_eq!(rows[0].node_id, 7);
-        assert_eq!(rows[0].content_size, [10.0, 11.0]);
-        assert_eq!(rows[0].border, [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(nodes[0].name, "Save");
-    }
-
-    #[test]
-    fn malformed_layout_fails_at_the_schema_boundary() {
-        let error = decode_rows(Some(serde_json::json!([{
-            "nodeId": 7,
-            "bounds": [1.0, 2.0]
-        }])))
-        .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("invalid layout diagnostic schema")
-        );
     }
 }
