@@ -14,90 +14,18 @@ use serde::Deserialize;
 
 use crate::inspector::Client;
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(transparent)]
-struct Bounds([f64; 4]);
-
-impl Bounds {
-    fn x(self) -> f64 {
-        self.0[0]
-    }
-
-    fn y(self) -> f64 {
-        self.0[1]
-    }
-
-    fn width(self) -> f64 {
-        self.0[2]
-    }
-
-    fn height(self) -> f64 {
-        self.0[3]
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(transparent)]
-struct Size([f64; 2]);
-
-impl Size {
-    fn width(self) -> f64 {
-        self.0[0]
-    }
-
-    fn height(self) -> f64 {
-        self.0[1]
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(transparent)]
-struct Offset([f64; 2]);
-
-impl Offset {
-    fn x(self) -> f64 {
-        self.0[0]
-    }
-
-    fn y(self) -> f64 {
-        self.0[1]
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(transparent)]
-struct Edges([f64; 4]);
-
-impl Edges {
-    fn top(self) -> f64 {
-        self.0[0]
-    }
-
-    fn right(self) -> f64 {
-        self.0[1]
-    }
-
-    fn bottom(self) -> f64 {
-        self.0[2]
-    }
-
-    fn left(self) -> f64 {
-        self.0[3]
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LayoutRow {
     node_id: u64,
-    bounds: Bounds,
-    scroll_offset: Offset,
-    client_size: Size,
-    scroll_size: Size,
-    scroll_range: Size,
-    border: Edges,
-    padding: Edges,
-    content_size: Size,
+    bounds: [f64; 4],
+    scroll_offset: [f64; 2],
+    client_size: [f64; 2],
+    scroll_size: [f64; 2],
+    scroll_range: [f64; 2],
+    border: [f64; 4],
+    padding: [f64; 4],
+    content_size: [f64; 2],
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +75,14 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
         let Some(row) = rows.get(&node.id) else {
             continue;
         };
-        let bounds = row.bounds;
+        let [x, y, width, height] = row.bounds;
+        let [scroll_x, scroll_y] = row.scroll_offset;
+        let [range_width, range_height] = row.scroll_range;
+        let [client_width, client_height] = row.client_size;
+        let [content_width, content_height] = row.content_size;
+        let [border_top, border_right, border_bottom, border_left] = row.border;
+        let [padding_top, padding_right, padding_bottom, padding_left] = row.padding;
+        let [scroll_width, scroll_height] = row.scroll_size;
 
         // Border/padding use CSS shorthand order: top, right, bottom, left.
         // Every value below is named and fixed-size; a missing or malformed
@@ -159,28 +94,28 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
              scrollable={:.1},{:.1}  {}",
             node.id,
             node.role,
-            bounds.x(),
-            bounds.y(),
-            bounds.width(),
-            bounds.height(),
-            row.scroll_offset.x(),
-            row.scroll_offset.y(),
-            row.scroll_range.width(),
-            row.scroll_range.height(),
-            row.client_size.width(),
-            row.client_size.height(),
-            row.content_size.width(),
-            row.content_size.height(),
-            row.border.top(),
-            row.border.right(),
-            row.border.bottom(),
-            row.border.left(),
-            row.padding.top(),
-            row.padding.right(),
-            row.padding.bottom(),
-            row.padding.left(),
-            row.scroll_size.width(),
-            row.scroll_size.height(),
+            x,
+            y,
+            width,
+            height,
+            scroll_x,
+            scroll_y,
+            range_width,
+            range_height,
+            client_width,
+            client_height,
+            content_width,
+            content_height,
+            border_top,
+            border_right,
+            border_bottom,
+            border_left,
+            padding_top,
+            padding_right,
+            padding_bottom,
+            padding_left,
+            scroll_width,
+            scroll_height,
             node.name.chars().take(60).collect::<String>()
         );
         shown += 1;
@@ -220,8 +155,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(rows[0].node_id, 7);
-        assert_eq!(rows[0].content_size.width(), 10.0);
-        assert_eq!(rows[0].border.left(), 4.0);
+        assert_eq!(rows[0].content_size, [10.0, 11.0]);
+        assert_eq!(rows[0].border, [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(nodes[0].name, "Save");
     }
 
