@@ -256,6 +256,16 @@ pub struct Check {
     /// activate another and require its selected state to change.
     #[serde(default)]
     pub prepare: Option<String>,
+    /// Skip [`prepare`](Self::prepare) when this rendered target already paints.
+    ///
+    /// Component sweeps intentionally reuse one native host per component for
+    /// speed. An earlier outcome may therefore leave a menu open. Activating
+    /// its trigger again would close the menu and turn shared-host execution
+    /// into a false failure, while omitting preparation would make the same
+    /// check impossible to run by id against a fresh host. This selector makes
+    /// the precondition idempotent in both cases.
+    #[serde(default)]
+    pub prepare_unless: Option<String>,
     /// Use a real pointer press for [`prepare`](Self::prepare).
     ///
     /// Focus-sensitive popovers can legitimately distinguish a human press
@@ -980,6 +990,13 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_make_preparation_idempotent() {
+        let check = parse("prepare:Some(\"Menu\"),prepare_unless:Some(\"menuitem:First\"),");
+        assert_eq!(check.prepare.as_deref(), Some("Menu"));
+        assert_eq!(check.prepare_unless.as_deref(), Some("menuitem:First"));
+    }
+
+    #[test]
     fn checks_can_prepare_with_a_real_pointer_without_changing_the_action_mode() {
         let check = parse("prepare:Some(\"Draft\"),prepare_press:true,");
         assert!(check.prepare_press);
@@ -1036,6 +1053,7 @@ mod tests {
             what: "the slider moves".into(),
             open: None,
             prepare: None,
+            prepare_unless: None,
             prepare_press: false,
             prepare_key: None,
             hover: None,
