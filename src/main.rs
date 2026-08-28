@@ -2059,6 +2059,16 @@ async fn run_qa(
          * collapse/expand round trips: an `Expand …` action remains available
          * after the preceding check closed its section and is not pre-empted.
          */
+        if open_error.is_none()
+            && let Some(reveal) = check.reveal_before_capture.as_deref()
+        {
+            if let Err(error) = scroll_hover_target_into_view(client, reveal).await {
+                open_error = Some(error);
+            } else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
         let setup_target = check
             .hover
             .as_ref()
@@ -2251,9 +2261,6 @@ async fn run_qa(
                 pixel_outcome = Some(measured);
             } else if check.expect == qa::Expect::PixelsHoldAfterHover {
                 let measured = async {
-                    if let Some(reveal) = check.reveal_before_capture.as_deref() {
-                        scroll_hover_target_into_view(client, reveal).await?;
-                    }
                     scroll_hover_target_into_view(client, &check.subject).await?;
                     park_pointer(client).await?;
                     let before = capture_stable_region(client, &check.subject).await?;
