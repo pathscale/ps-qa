@@ -188,6 +188,22 @@ pub enum Expect {
     /// This is a rendered-order assertion, not DOM order. It verifies list
     /// placement using the boxes a person actually sees.
     Above,
+    /// The rendered pixels stay identical across the declared pointer abuse.
+    ///
+    /// This is deliberately a frame assertion rather than a DOM-count
+    /// assertion. A duplicated fixed child still exists once in the DOM and
+    /// has one layout box, but semi-transparent shadows darken on every
+    /// incremental resolve. The live runner captures before and after
+    /// [`after_prepare_hover`](Check::after_prepare_hover), with the pointer
+    /// returned to the same non-hover state.
+    PixelsHold,
+    /// Hovering the declared control visibly changes the captured region.
+    ///
+    /// This guards authored hover feedback through rendered pixels. Semantic
+    /// inspection cannot see a `data-focused` style change, and merely proving
+    /// the pointer event was dispatched does not prove the person received
+    /// any feedback from it.
+    PixelsChange,
     /// The exact semantic node's exposed value changed after the action.
     ///
     /// This is the outcome for sliders, switches, and other value-bearing
@@ -274,6 +290,14 @@ pub struct Check {
     /// nodes behind, so the abuse comes with its own assertion rather than
     /// needing one written alongside.
     pub hover: Option<Hover>,
+    /// Repeatedly hover this node after [`prepare`](Self::prepare).
+    ///
+    /// Menus do not expose their items until their trigger has opened them, so
+    /// the ordinary pre-prepare hover cannot exercise pointer-driven retained
+    /// painting inside an overlay. This action exists for that ordering and
+    /// leaves between entries exactly like [`hover`](Self::hover).
+    #[serde(default)]
+    pub after_prepare_hover: Option<Hover>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
     /// Focus this named text field and enter [`text`](Self::text).
@@ -694,6 +718,9 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::PixelsHold | Expect::PixelsChange => {
+            return Err("pixel expectations must be resolved by the live QA runner".to_owned());
+        }
         Expect::PaintsMore => {
             let was = matching(before, &check.subject)
                 .into_iter()
@@ -975,6 +1002,14 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_repeat_hover_after_preparation() {
+        let check = parse("after_prepare_hover:Some((\"menuitem:low\",5)),");
+        let hover = check.after_prepare_hover.expect("post-prepare hover");
+        assert_eq!(hover.target(), "menuitem:low");
+        assert_eq!(hover.times(), 5);
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -1004,6 +1039,7 @@ mod tests {
             prepare_press: false,
             prepare_key: None,
             hover: None,
+            after_prepare_hover: None,
             click: None,
             type_into: None,
             text: None,

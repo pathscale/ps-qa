@@ -1463,6 +1463,182 @@ async fn away_target(client: &mut Client) -> Result<Option<u64>> {
         .map(|(id, _)| id))
 }
 
+/// Move the pointer to the document root and let authored hover state settle.
+async fn park_pointer(client: &mut Client) -> std::result::Result<(), String> {
+    if let Some(root) = away_target(client)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::Hover {
+                node_id: root,
+            }))
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    Ok(())
+}
+
+/// Enter a named control repeatedly, leaving between entries.
+///
+/// Kept separate from the QA loop because overlays need the same abuse after
+/// their trigger has prepared them, while ordinary hover-revealed controls
+/// need it before preparation.
+async fn repeat_hover(
+    client: &mut Client,
+    hover: &qa::Hover,
+    leave_after: bool,
+) -> std::result::Result<(), String> {
+    let want = hover.target();
+    let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
+    let node_id = tree
+        .nodes
+        .iter()
+        .find(|node| {
+            selector_matches_node(node, want)
+                && node.visible
+                && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+        })
+        .map(|node| node.id)
+        .ok_or_else(|| format!("could not hover {want:?}: no visible, sized matching node"))?;
+
+    client
+        .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
+            node_id,
+        }))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    for turn in 0..hover.times() {
+        if turn > 0
+            && let Some(root) = away_target(client)
+                .await
+                .map_err(|error| error.to_string())?
+        {
+            client
+                .agent(&AgentControlRequest::Act(AgentAction::Hover {
+                    node_id: root,
+                }))
+                .await
+                .map_err(|error| error.to_string())?;
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+            .await
+            .map_err(|error| error.to_string())?;
+        if hover.times() > 1 || leave_after {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    if leave_after
+        && let Some(root) = away_target(client)
+            .await
+            .map_err(|error| error.to_string())?
+    {
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::Hover {
+                node_id: root,
+            }))
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    Ok(())
+}
+
+/// Capture one declared rendered region through the renderer's own paint path.
+async fn capture_region(
+    client: &mut Client,
+    selector: &str,
+) -> std::result::Result<CapturedImage, String> {
+    let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
+    let node_id = tree
+        .nodes
+        .iter()
+        .filter(|node| {
+            selector_matches_node(node, selector)
+                && node.visible
+                && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
+        })
+        .max_by(|a, b| {
+            let area = |node: &&SemanticNode| {
+                node.bounds
+                    .map(|bounds| bounds[2] * bounds[3])
+                    .unwrap_or_default()
+            };
+            area(a).total_cmp(&area(b))
+        })
+        .map(|node| node.id)
+        .ok_or_else(|| format!("no painted capture region matching {selector:?}"))?;
+    let answer = client
+        .diagnostics(&DiagnosticsRequest::Capture(CaptureRequest {
+            node_id: Some(node_id),
+            scale: 1.0,
+        }))
+        .await
+        .map_err(|error| format!("could not capture {selector:?}: {error}"))?;
+    match answer.response {
+        DebugResponse::Captured(image) => Ok(image),
+        DebugResponse::Error(error) => Err(format!(
+            "frame capture refused: {} ({})",
+            error.message, error.code
+        )),
+        other => Err(format!("asked for a rendered frame, got {other:?}")),
+    }
+}
+
+/// Require two captures of the same authored state to be pixel-identical.
+fn pixels_hold(before: &CapturedImage, after: &CapturedImage) -> std::result::Result<(), String> {
+    use base64::Engine as _;
+
+    if before.width != after.width || before.height != after.height {
+        return Err(format!(
+            "rendered frame changed size from {}x{} to {}x{}",
+            before.width, before.height, after.width, after.height
+        ));
+    }
+    if before.rgba_base64 == after.rgba_base64 {
+        return Ok(());
+    }
+
+    let decode = |encoded: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("captured frame is not valid base64: {error}"))
+    };
+    let before_rgba = decode(&before.rgba_base64)?;
+    let after_rgba = decode(&after.rgba_base64)?;
+    let changed = before_rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after_rgba.as_chunks::<4>().0.iter())
+        .filter(|(before, after)| before != after)
+        .count();
+    Err(format!(
+        "{changed} rendered pixel(s) changed after the pointer returned to the same state"
+    ))
+}
+
+/// Require hover feedback to change pixels without changing the region's box.
+fn pixels_change(before: &CapturedImage, after: &CapturedImage) -> std::result::Result<(), String> {
+    if before.width != after.width || before.height != after.height {
+        return Err(format!(
+            "hover changed the capture region size from {}x{} to {}x{}",
+            before.width, before.height, after.width, after.height
+        ));
+    }
+    if before.rgba_base64 == after.rgba_base64 {
+        Err("hover left every rendered pixel unchanged".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
 /// Launch a host for one page and wait for the descriptor it announces.
 ///
 /// Waiting for the line rather than sleeping is what makes this reliable on a
@@ -1782,6 +1958,7 @@ async fn run_qa(
          * the check cannot find the control it is about.
          */
         let mut open_error = None;
+        let mut pixel_outcome: Option<std::result::Result<(), String>> = None;
         if let Some(want) = check.open.as_deref() {
             /*
              * A permanent surface marker can answer "already there". A
@@ -1929,84 +2106,14 @@ async fn run_qa(
         // matches. Another retained surface may render the same control names,
         // so hovering by name alone can land in the wrong list.
         if open_error.is_none()
-            && let Some(want) = check.hover.as_ref().map(qa::Hover::target)
+            && let Some(hover) = check.hover.as_ref()
         {
-            let (tree, _) = inspect(client).await?;
-            // Through the shared matcher, so hover understands `role:name` and
-            // `@slot` like every other step. It matched `node.name` raw, so a
-            // selector carrying a role prefix could never resolve: no node is
-            // named "button:Change the status of ...", and the check failed
-            // with "no visible, sized node" while `find` returned the control.
-            let target = tree
-                .nodes
-                .iter()
-                .find(|node| {
-                    selector_matches_node(node, want)
-                        && node.visible
-                        && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0)
-                })
-                .map(|node| node.id);
-            if let Some(node_id) = target {
-                client
-                    .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                        node_id,
-                    }))
-                    .await?;
-                /*
-                 * Hover as many times as the check asked for.
-                 *
-                 * Moving the pointer away between hovers, because hovering the
-                 * same node twice with no departure is one hover as far as the
-                 * renderer is concerned, and the defect this exists to catch
-                 * lives in the enter/leave pair: a pill whose hover adds a
-                 * shadow layer and never removes it looks right once and
-                 * accumulates from the second time on.
-                 */
-                /*
-                 * Twice, always, with a departure between.
-                 *
-                 * Not a field, because a field is a decision and a decision
-                 * nobody makes is a check nobody wrote: the abuse has to be
-                 * what happens by default or it does not happen. Hovering once
-                 * proves a control responds; hovering twice is what catches the
-                 * class of defect where entering adds something that leaving
-                 * never removes, which is invisible to a single hover and to
-                 * anyone not hovering twice by hand.
-                 *
-                 * The departure matters: hovering the same node twice with no
-                 * leave in between is one hover as far as the renderer is
-                 * concerned, and the defect lives in the enter/leave pair.
-                 */
-                let times = check.hover.as_ref().map_or(1, qa::Hover::times);
-                for turn in 0..times {
-                    if turn > 0 {
-                        // Away, so the next hover is a real entry. The root is
-                        // always present and is never the hovered control.
-                        if let Some(root) = away_target(client).await? {
-                            client
-                                .agent(&AgentControlRequest::Act(AgentAction::Hover {
-                                    node_id: root,
-                                }))
-                                .await?;
-                            tokio::time::sleep(Duration::from_millis(30)).await;
-                        }
-                    }
-                    client
-                        .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
-                        .await?;
-                    if times > 1 {
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                    }
-                }
-                if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
-                    let _ = wait_for_arrival(client, None, next).await?;
-                } else {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
+            if let Err(error) = repeat_hover(client, hover, false).await {
+                open_error = Some(error);
+            } else if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
+                let _ = wait_for_arrival(client, None, next).await?;
             } else {
-                open_error = Some(format!(
-                    "could not hover {want:?}: no visible, sized matching node"
-                ));
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
 
@@ -2073,6 +2180,47 @@ async fn run_qa(
                 let _ = wait_for_arrival(client, None, next).await?;
             } else {
                 tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
+        // Overlay contents do not exist until their trigger has prepared
+        // them. Exercise their pointer-driven incremental resolves now, then
+        // leave the pointer away so the final authored hover state is stable.
+        if open_error.is_none()
+            && let Some(hover) = check.after_prepare_hover.as_ref()
+        {
+            if check.expect == qa::Expect::PixelsHold {
+                let measured = async {
+                    park_pointer(client).await?;
+                    // A dropdown keeps the last entered item active after the
+                    // pointer leaves. Establish that authored state once so
+                    // the two frames differ only if later resolves accumulate
+                    // renderer paint entries.
+                    let establish = qa::Hover::Once(hover.target().to_owned());
+                    repeat_hover(client, &establish, true).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let before = capture_region(client, &check.subject).await?;
+                    repeat_hover(client, hover, true).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let after = capture_region(client, &check.subject).await?;
+                    pixels_hold(&before, &after)
+                }
+                .await;
+                pixel_outcome = Some(measured);
+            } else if check.expect == qa::Expect::PixelsChange {
+                let measured = async {
+                    park_pointer(client).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let before = capture_region(client, &check.subject).await?;
+                    repeat_hover(client, hover, false).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let after = capture_region(client, &check.subject).await?;
+                    pixels_change(&before, &after)
+                }
+                .await;
+                pixel_outcome = Some(measured);
+            } else if let Err(error) = repeat_hover(client, hover, true).await {
+                open_error = Some(error);
             }
         }
 
@@ -2209,7 +2357,13 @@ async fn run_qa(
         let transport_timed_out = action_error
             .as_deref()
             .is_some_and(|error| error.contains("inspector did not answer within"));
-        let after = if action_error.is_none() || transport_timed_out {
+        let live_paint_expect = matches!(
+            check.expect,
+            qa::Expect::PixelsHold | qa::Expect::PixelsChange
+        );
+        let after = if live_paint_expect {
+            inspect(client).await?.0
+        } else if action_error.is_none() || transport_timed_out {
             settle_for_outcome(
                 client,
                 check,
@@ -2221,23 +2375,32 @@ async fn run_qa(
         } else {
             inspect(client).await?.0
         };
-        let mut outcome = match action_error {
-            Some(error) if transport_timed_out => outcome_verdict(
-                check,
-                &before.nodes,
-                &after.nodes,
-                action_target.as_deref(),
-                action_node_id,
-            )
-            .map_err(|outcome| format!("{error}; rendered outcome also failed: {outcome}")),
-            Some(error) => Err(error),
-            None => outcome_verdict(
-                check,
-                &before.nodes,
-                &after.nodes,
-                action_target.as_deref(),
-                action_node_id,
-            ),
+        let mut outcome = if live_paint_expect {
+            match action_error {
+                Some(error) => Err(error),
+                None => pixel_outcome.unwrap_or_else(|| {
+                    Err("pixel expectations require after_prepare_hover".to_owned())
+                }),
+            }
+        } else {
+            match action_error {
+                Some(error) if transport_timed_out => outcome_verdict(
+                    check,
+                    &before.nodes,
+                    &after.nodes,
+                    action_target.as_deref(),
+                    action_node_id,
+                )
+                .map_err(|outcome| format!("{error}; rendered outcome also failed: {outcome}")),
+                Some(error) => Err(error),
+                None => outcome_verdict(
+                    check,
+                    &before.nodes,
+                    &after.nodes,
+                    action_target.as_deref(),
+                    action_node_id,
+                ),
+            }
         };
         // Preparation is not the outcome latency. Opening an editor, hovering
         // its row, and filling a field establish the precondition; the final
@@ -5564,12 +5727,12 @@ mod tests {
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
         is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
         outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
-        resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
-        stable_arrival,
+        pixels_change, pixels_hold, resolved_action_target, retain_exact_candidates,
+        saved_controls, selector_matches_node, stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
-    use blitz_control_protocol::SemanticNode;
+    use blitz_control_protocol::{CapturedImage, SemanticNode};
     use std::collections::HashSet;
 
     fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
@@ -5585,6 +5748,31 @@ mod tests {
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
             slot: None,
         }
+    }
+
+    #[test]
+    fn pixel_stability_reports_a_changed_rendered_pixel() {
+        use base64::Engine as _;
+
+        let capture = |rgba: &[u8]| CapturedImage {
+            width: 1,
+            height: 1,
+            rgba_base64: base64::engine::general_purpose::STANDARD.encode(rgba),
+            node_id: Some(7),
+        };
+        let before = capture(&[20, 20, 20, 255]);
+        assert!(pixels_hold(&before, &before).is_ok());
+        assert_eq!(
+            pixels_change(&before, &before).unwrap_err(),
+            "hover left every rendered pixel unchanged"
+        );
+
+        let after = capture(&[19, 20, 20, 255]);
+        assert_eq!(
+            pixels_hold(&before, &after).unwrap_err(),
+            "1 rendered pixel(s) changed after the pointer returned to the same state"
+        );
+        assert!(pixels_change(&before, &after).is_ok());
     }
 
     #[test]
@@ -5710,6 +5898,7 @@ mod tests {
             prepare_press: false,
             prepare_key: None,
             hover: None,
+            after_prepare_hover: None,
             click: click.map(str::to_owned),
             type_into: None,
             text: None,
