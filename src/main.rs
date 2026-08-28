@@ -2124,7 +2124,19 @@ async fn run_qa(
         if open_error.is_none()
             && let Some(want) = check.prepare.as_deref()
         {
-            let prepared = if let Some(key) = check.prepare_key.as_deref() {
+            let already_prepared = if let Some(unless) = check.prepare_unless.as_deref() {
+                let (snapshot, _) = inspect(client).await?;
+                snapshot.nodes.iter().any(|node| {
+                    node.visible
+                        && selector_matches_node(node, unless)
+                        && painted_bounds(node).is_some()
+                })
+            } else {
+                false
+            };
+            let prepared = if already_prepared {
+                Ok(())
+            } else if let Some(key) = check.prepare_key.as_deref() {
                 press_key(client, key, 1, want, true).await.map(|_| ())
             } else if check.prepare_press {
                 press_named(client, want).await
@@ -5895,6 +5907,7 @@ mod tests {
             what: "a rendered outcome".into(),
             open: None,
             prepare: None,
+            prepare_unless: None,
             prepare_press: false,
             prepare_key: None,
             hover: None,
