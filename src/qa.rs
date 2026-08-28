@@ -163,6 +163,13 @@ pub enum Expect {
     /// every member is stacked on the same coordinates. This is the rendered
     /// contract for layouts such as a colour flower.
     DistinctPositions,
+    /// Every painted node in the matching family stays inside one comparison box.
+    ///
+    /// Distinct positions alone do not prove a composition is intact: every
+    /// petal in a colour flower can occupy a different coordinate while the
+    /// whole family is detached from its wheel. `compare` names the semantic
+    /// container whose rendered bounds own the family.
+    ContainedBy,
     /// The exact accessible name selected for this check's click still paints.
     ///
     /// Use this for a row action whose label includes the row identity. It
@@ -197,6 +204,12 @@ pub enum Expect {
     /// [`after_prepare_hover`](Check::after_prepare_hover), with the pointer
     /// returned to the same non-hover state.
     PixelsHold,
+    /// The first stable neutral frame equals the neutral frame after one hover.
+    ///
+    /// This catches controls whose initial display list is malformed until a
+    /// pointer invalidation repairs it. The semantic tree and layout boxes can
+    /// be correct in both frames, so a geometry-only assertion stays green.
+    PixelsHoldAfterHover,
     /// Hovering the declared control visibly changes the captured region.
     ///
     /// This guards authored hover feedback through rendered pixels. Semantic
@@ -204,6 +217,13 @@ pub enum Expect {
     /// the pointer event was dispatched does not prove the person received
     /// any feedback from it.
     PixelsChange,
+    /// The subject's resolved background colour is fully opaque.
+    ///
+    /// A translucent child over an animated gradient cannot have a flat fill,
+    /// regardless of stacking contexts: the parent's pixels necessarily show
+    /// through. The live runner reads the colour Blitz hands to paint and
+    /// requires an alpha channel of `ff`.
+    OpaqueBackground,
     /// The exact semantic node's exposed value changed after the action.
     ///
     /// This is the outcome for sliders, switches, and other value-bearing
@@ -698,6 +718,45 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::ContainedBy => {
+            let compare = check
+                .compare
+                .as_deref()
+                .ok_or_else(|| "ContainedBy requires compare".to_owned())?;
+            let painted: Vec<_> = found.iter().copied().filter(|node| paints(node)).collect();
+            if painted.is_empty() {
+                return Err(format!("no painted node matching {:?}", check.subject));
+            }
+            let container = matching(after, compare)
+                .into_iter()
+                .filter(|node| !painted.iter().any(|subject| subject.id == node.id))
+                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .ok_or_else(|| format!("no painted comparison node matching {compare:?}"))?;
+            const SLACK: f64 = 1.0;
+            for node in painted {
+                let bounds = node.bounds.expect("painted nodes have bounds");
+                let inside = bounds[0] >= container[0] - SLACK
+                    && bounds[1] >= container[1] - SLACK
+                    && bounds[0] + bounds[2] <= container[0] + container[2] + SLACK
+                    && bounds[1] + bounds[3] <= container[1] + container[3] + SLACK;
+                if !inside {
+                    return Err(format!(
+                        "{:?} id={} at {:.0},{:.0} {:.0}x{:.0} escapes {compare:?} at \
+                         {:.0},{:.0} {:.0}x{:.0}",
+                        check.subject,
+                        node.id,
+                        bounds[0],
+                        bounds[1],
+                        bounds[2],
+                        bounds[3],
+                        container[0],
+                        container[1],
+                        container[2],
+                        container[3]
+                    ));
+                }
+            }
+        }
         Expect::TargetPaints => {
             return Err("TargetPaints must be resolved by the live QA runner".to_owned());
         }
@@ -769,8 +828,11 @@ pub fn verdict(
                 ));
             }
         }
-        Expect::PixelsHold | Expect::PixelsChange => {
-            return Err("pixel expectations must be resolved by the live QA runner".to_owned());
+        Expect::PixelsHold
+        | Expect::PixelsHoldAfterHover
+        | Expect::PixelsChange
+        | Expect::OpaqueBackground => {
+            return Err("paint expectations must be resolved by the live QA runner".to_owned());
         }
         Expect::PaintsMore => {
             let was = matching(before, &check.subject)
@@ -1286,6 +1348,57 @@ mod tests {
         let error = verdict(&check, &[], &[node(1, 10.0, 10.0), node(2, 10.0, 10.0)])
             .expect_err("stacked controls are not a positioned family");
         assert!(error.contains("only 1 distinct position"));
+    }
+
+    #[test]
+    fn a_rendered_family_must_stay_inside_its_comparison_box() {
+        let mut check = parse("compare:Some(\"group:Surface colour\"),");
+        check.subject = "radio:Theme color".into();
+        check.expect = Expect::ContainedBy;
+        let child = |id, x, y| SemanticNode {
+            id,
+            parent: Some(1),
+            role: "radio".into(),
+            name: format!("Theme color {id}"),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([x, y, 20.0, 20.0]),
+            slot: None,
+        };
+        let container = SemanticNode {
+            id: 1,
+            parent: None,
+            role: "group".into(),
+            name: "Surface colour".into(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([10.0, 10.0, 190.0, 190.0]),
+            slot: None,
+        };
+
+        assert!(
+            verdict(
+                &check,
+                &[],
+                &[
+                    container.clone(),
+                    child(2, 20.0, 20.0),
+                    child(3, 160.0, 160.0)
+                ]
+            )
+            .is_ok()
+        );
+        let error = verdict(
+            &check,
+            &[],
+            &[container, child(2, 20.0, 20.0), child(3, 195.0, 195.0)],
+        )
+        .expect_err("a detached petal must fail containment");
+        assert!(error.contains("escapes \"group:Surface colour\""));
     }
 
     #[test]

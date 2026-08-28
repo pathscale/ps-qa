@@ -1325,7 +1325,6 @@ async fn park_pointer(client: &mut Client) -> std::result::Result<(), String> {
             }))
             .await
             .map_err(|error| error.to_string())?;
-        tokio::time::sleep(Duration::from_millis(30)).await;
     }
     Ok(())
 }
@@ -1372,15 +1371,11 @@ async fn repeat_hover(
                 }))
                 .await
                 .map_err(|error| error.to_string())?;
-            tokio::time::sleep(Duration::from_millis(30)).await;
         }
         client
             .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
             .await
             .map_err(|error| error.to_string())?;
-        if hover.times() > 1 || leave_after {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
     }
 
     if leave_after
@@ -1394,7 +1389,6 @@ async fn repeat_hover(
             }))
             .await
             .map_err(|error| error.to_string())?;
-        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     Ok(())
@@ -1439,6 +1433,101 @@ async fn capture_region(
         )),
         other => Err(format!("asked for a rendered frame, got {other:?}")),
     }
+}
+
+/// Capture once the rendered region stops changing, without guessing how long
+/// its authored transition lasts.
+async fn capture_stable_region(
+    client: &mut Client,
+    selector: &str,
+) -> std::result::Result<CapturedImage, String> {
+    let deadline = tokio::time::Instant::now() + check_timeout(900);
+    let mut previous = capture_region(client, selector).await?;
+    loop {
+        tokio::time::sleep(Duration::from_millis(16)).await;
+        let current = capture_region(client, selector).await?;
+        if current.width == previous.width
+            && current.height == previous.height
+            && current.rgba_base64 == previous.rgba_base64
+        {
+            return Ok(current);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "rendered region {selector:?} did not settle within the interaction deadline"
+            ));
+        }
+        previous = current;
+    }
+}
+
+fn require_opaque_background(color: &str) -> std::result::Result<(), String> {
+    let Some(alpha) = color.strip_prefix('#').and_then(|hex| hex.get(6..8)) else {
+        return Err(format!(
+            "resolved background colour {color:?} is not #rrggbbaa"
+        ));
+    };
+    if alpha.eq_ignore_ascii_case("ff") {
+        Ok(())
+    } else {
+        Err(format!(
+            "resolved background colour {color} is translucent; a flat surface requires alpha ff"
+        ))
+    }
+}
+
+/// Require one rendered subject to own a solid fill in computed paint state.
+async fn opaque_background(client: &mut Client, selector: &str) -> std::result::Result<(), String> {
+    let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
+    let node_id = tree
+        .nodes
+        .iter()
+        .filter(|node| {
+            selector_matches_node(node, selector)
+                && node.visible
+                && node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+        })
+        .max_by(|left, right| {
+            let area = |node: &&SemanticNode| {
+                node.bounds
+                    .map(|bounds| bounds[2] * bounds[3])
+                    .unwrap_or_default()
+            };
+            area(left).total_cmp(&area(right))
+        })
+        .map(|node| node.id)
+        .ok_or_else(|| {
+            format!("could not inspect {selector:?}: no visible, sized matching node")
+        })?;
+
+    let answer = client
+        .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
+            include_dom: false,
+            include_layout: false,
+            include_computed_style: true,
+        }))
+        .await
+        .map_err(|error| error.to_string())?;
+    let DebugResponse::Snapshot(snapshot) = answer.response else {
+        return Err(format!(
+            "asked for the computed background of {selector:?}, got {:?}",
+            answer.response
+        ));
+    };
+    let color = snapshot
+        .computed_style
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("nodeId").and_then(serde_json::Value::as_u64) == Some(node_id))
+        })
+        .and_then(|row| row.get("backgroundColor"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("diagnostics returned no background colour for {selector:?}"))?;
+    require_opaque_background(color)
 }
 
 /// Require two captures of the same authored state to be pixel-identical.
@@ -2071,11 +2160,19 @@ async fn run_qa(
                     // renderer paint entries.
                     let establish = qa::Hover::Once(hover.target().to_owned());
                     repeat_hover(client, &establish, true).await?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let before = capture_region(client, &check.subject).await?;
+                    let before = capture_stable_region(client, &check.subject).await?;
                     repeat_hover(client, hover, true).await?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let after = capture_region(client, &check.subject).await?;
+                    let after = capture_stable_region(client, &check.subject).await?;
+                    pixels_hold(&before, &after)
+                }
+                .await;
+                pixel_outcome = Some(measured);
+            } else if check.expect == qa::Expect::PixelsHoldAfterHover {
+                let measured = async {
+                    park_pointer(client).await?;
+                    let before = capture_stable_region(client, &check.subject).await?;
+                    repeat_hover(client, hover, true).await?;
+                    let after = capture_stable_region(client, &check.subject).await?;
                     pixels_hold(&before, &after)
                 }
                 .await;
@@ -2083,11 +2180,9 @@ async fn run_qa(
             } else if check.expect == qa::Expect::PixelsChange {
                 let measured = async {
                     park_pointer(client).await?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let before = capture_region(client, &check.subject).await?;
+                    let before = capture_stable_region(client, &check.subject).await?;
                     repeat_hover(client, hover, false).await?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let after = capture_region(client, &check.subject).await?;
+                    let after = capture_stable_region(client, &check.subject).await?;
                     pixels_change(&before, &after)
                 }
                 .await;
@@ -2126,6 +2221,10 @@ async fn run_qa(
         // baseline afterward: inspecting before hover both omitted that real
         // pre-action state and paid for an immediately discarded snapshot.
         let (before, _) = inspect(client).await?;
+
+        if open_error.is_none() && check.expect == qa::Expect::OpaqueBackground {
+            pixel_outcome = Some(opaque_background(client, &check.subject).await);
+        }
 
         /*
          * The tree is mostly nodes somebody can see.
@@ -2223,7 +2322,10 @@ async fn run_qa(
             .is_some_and(|error| error.contains("inspector did not answer within"));
         let live_paint_expect = matches!(
             check.expect,
-            qa::Expect::PixelsHold | qa::Expect::PixelsChange
+            qa::Expect::PixelsHold
+                | qa::Expect::PixelsHoldAfterHover
+                | qa::Expect::PixelsChange
+                | qa::Expect::OpaqueBackground
         );
         let after = if live_paint_expect {
             inspect(client).await?.0
@@ -2243,7 +2345,7 @@ async fn run_qa(
             match action_error {
                 Some(error) => Err(error),
                 None => pixel_outcome.unwrap_or_else(|| {
-                    Err("pixel expectations require after_prepare_hover".to_owned())
+                    Err("the live paint expectation was not measured".to_owned())
                 }),
             }
         } else {
@@ -5581,8 +5683,8 @@ mod tests {
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
         is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
         outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
-        pixels_change, pixels_hold, resolved_action_target, retain_exact_candidates,
-        saved_controls, selector_matches_node, stable_arrival,
+        pixels_change, pixels_hold, require_opaque_background, resolved_action_target,
+        retain_exact_candidates, saved_controls, selector_matches_node, stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -5627,6 +5729,16 @@ mod tests {
             "1 rendered pixel(s) changed after the pointer returned to the same state"
         );
         assert!(pixels_change(&before, &after).is_ok());
+    }
+
+    #[test]
+    fn flat_backgrounds_reject_translucent_resolved_paint() {
+        assert!(require_opaque_background("#17202bff").is_ok());
+        assert_eq!(
+            require_opaque_background("#17202b66").unwrap_err(),
+            "resolved background colour #17202b66 is translucent; a flat surface requires alpha ff"
+        );
+        assert!(require_opaque_background("transparent").is_err());
     }
 
     #[test]
