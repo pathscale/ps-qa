@@ -125,6 +125,13 @@ pub enum Expect {
     /// because the composer and the search field are textboxes that always
     /// paint; verified by reintroducing the bug and watching it pass.
     PaintsMore,
+    /// A repeated rendered family's members change while its viewport size may stay fixed.
+    ///
+    /// Virtualized pagination replaces the five painted rows with the next
+    /// five rather than mounting ten. Count assertions therefore reject a
+    /// working pager. This compares the matching semantic identities and names
+    /// so replacing or recycling rows both prove that the page advanced.
+    FamilyChanges,
     /// The count of matching nodes did not change.
     Holds,
     /// A node matching *both* a name and a role paints.
@@ -321,6 +328,14 @@ pub struct Check {
     /// and a single entry does not mistake unrelated asynchronous rendering for
     /// accumulation.
     pub hover: Option<Hover>,
+    /// Skip [`hover`](Self::hover) when this rendered target already paints.
+    ///
+    /// A preceding check may intentionally leave the dialog or row action that
+    /// hover would reveal open. Re-hovering the covered row is impossible and
+    /// unnecessary; an isolated rerun still performs the hover when the target
+    /// is absent.
+    #[serde(default)]
+    pub hover_unless: Option<String>,
     /// Repeatedly hover this node after [`prepare`](Self::prepare).
     ///
     /// Menus do not expose their items until their trigger has opened them, so
@@ -380,6 +395,15 @@ pub struct Check {
     /// rendered action still has to pass the one-second budget.
     #[serde(default)]
     pub settle_after_ms: u64,
+    /// Run this check only after every ordinary shared-instance outcome.
+    ///
+    /// A destructive sequence may deliberately remove fixture state that
+    /// controls on another surface still need. Surface affinity cannot order
+    /// that safely: it groups by mount cost, so a project reset would otherwise
+    /// precede later Settings and Home checks. The runner keeps destructive
+    /// checks ordered, but moves their whole sequence to the final tail.
+    #[serde(default)]
+    pub destructive: bool,
     /// The node the assertion is about.
     pub subject: String,
     pub expect: Expect,
@@ -854,6 +878,30 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::FamilyChanges => {
+            let family = |nodes: &[SemanticNode]| {
+                matching(nodes, &check.subject)
+                    .into_iter()
+                    .filter(|node| paints(node))
+                    .map(|node| (node.id, node.name.clone()))
+                    .collect::<std::collections::HashSet<_>>()
+            };
+            let was = family(before);
+            let now = family(after);
+            if now.is_empty() {
+                return Err(format!(
+                    "no painted node matching {:?} after pagination",
+                    check.subject
+                ));
+            }
+            if now == was {
+                return Err(format!(
+                    "{:?} kept the same {} rendered member(s)",
+                    check.subject,
+                    now.len()
+                ));
+            }
+        }
         Expect::Grows => {
             let was = matching(before, &check.subject).len();
             let now = found.len();
@@ -1093,6 +1141,12 @@ mod tests {
     }
 
     #[test]
+    fn destructive_checks_are_explicit_and_default_to_the_shared_body() {
+        assert!(!parse("").destructive);
+        assert!(parse("destructive:true,").destructive);
+    }
+
+    #[test]
     fn checks_can_prepare_a_semantic_state_before_the_measured_action() {
         let check = parse("prepare:Some(\"Draft\"),");
         assert_eq!(check.prepare.as_deref(), Some("Draft"));
@@ -1107,6 +1161,12 @@ mod tests {
         let check = parse("prepare:Some(\"Menu\"),prepare_unless:Some(\"menuitem:First\"),");
         assert_eq!(check.prepare.as_deref(), Some("Menu"));
         assert_eq!(check.prepare_unless.as_deref(), Some("menuitem:First"));
+    }
+
+    #[test]
+    fn checks_can_make_hover_idempotent() {
+        let check = parse("hover_unless:Some(\"Dialog\"),");
+        assert_eq!(check.hover_unless.as_deref(), Some("Dialog"));
     }
 
     #[test]
@@ -1207,6 +1267,7 @@ mod tests {
             prepare_press: false,
             prepare_key: None,
             hover: None,
+            hover_unless: None,
             after_prepare_hover: None,
             reveal_before_capture: None,
             click: None,
@@ -1219,6 +1280,7 @@ mod tests {
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
+            destructive: false,
             subject: "Output level".into(),
             expect: Expect::ValueChanges,
         };
@@ -1250,6 +1312,32 @@ mod tests {
             .is_err(),
             "the exact activated id cannot be replaced by a same-name neighbour"
         );
+    }
+
+    #[test]
+    fn a_virtualized_family_can_advance_without_growing() {
+        let node = |id, name: &str| SemanticNode {
+            id,
+            parent: None,
+            role: "button".into(),
+            name: name.into(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 100.0, 24.0]),
+            slot: None,
+        };
+        let first = node(1, "Rename project alpha");
+        let mut second = node(2, "Rename project beta");
+        let mut check = parse("");
+        check.subject = "button:Rename project ".into();
+        check.expect = Expect::FamilyChanges;
+
+        assert!(verdict(&check, &[first.clone()], &[second.clone()]).is_ok());
+        assert!(verdict(&check, &[first.clone()], &[first.clone()]).is_err());
+        second.bounds = Some([0.0, 0.0, 0.0, 0.0]);
+        assert!(verdict(&check, &[first], &[second]).is_err());
     }
 
     #[test]

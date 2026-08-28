@@ -1342,6 +1342,22 @@ async fn repeat_hover(
     let want = hover.target();
     let node_id = scroll_hover_target_into_view(client, want).await?;
 
+    // A previous check may have left the pointer on this exact node. Sending
+    // Hover to it again is then a move within the same target, not a new enter,
+    // so hover-revealed row actions never mount. Every declared hover cycle
+    // starts from the same neutral state, including the first one.
+    if let Some(root) = away_target(client)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        client
+            .agent(&AgentControlRequest::Act(AgentAction::Hover {
+                node_id: root,
+            }))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
     for turn in 0..hover.times() {
         if turn > 0
             && let Some(root) = away_target(client)
@@ -1899,7 +1915,10 @@ async fn run_qa(
             selected.push((affinity, check));
         }
     }
-    selected.sort_by_key(|(surface, _)| *surface);
+    // Surface affinity amortizes large retained-pane mounts. Destructive
+    // sequences outrank that optimization: deleting fixture state before a
+    // later surface uses it makes an ordered shared sweep conflict with itself.
+    selected.sort_by_key(|(surface, check)| (check.destructive, *surface));
     let selected: Vec<&qa::Check> = selected.into_iter().map(|(_, check)| check).collect();
     if selected.is_empty() {
         let mut names: Vec<String> = all
@@ -1914,7 +1933,6 @@ async fn run_qa(
     }
 
     let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
-
     for check in selected {
         // Navigation and disclosure materialization are suite setup. Give them
         // a bounded but realistic budget; the measured control action below
@@ -1959,8 +1977,14 @@ async fn run_qa(
             let destination = surface_for_opener(want);
             let named_document = is_named_document_opener(want);
             let (here, _) = inspect(client).await?;
-            let arrived =
-                arrived_without_navigation(&here.nodes, destination, want_here, named_document);
+            let active_document_matches = named_document_is_active(&here.nodes, want);
+            let arrived = arrived_without_navigation(
+                &here.nodes,
+                destination,
+                want_here,
+                named_document,
+                active_document_matches,
+            );
             if cli::trace() {
                 let surface = reach::surfaces()
                     .iter()
@@ -2084,32 +2108,44 @@ async fn run_qa(
         if open_error.is_none()
             && let Some(hover) = check.hover.as_ref()
         {
-            let hovered = if hover.times() > 1 {
-                let first = qa::Hover::Once(hover.target().to_owned());
-                match repeat_hover(client, &first, false).await {
-                    Err(error) => Err(error),
-                    Ok(()) => {
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                        nodes_after_first_hover = Some(inspect(client).await?.0.nodes.len());
-                        match park_pointer(client).await {
-                            Err(error) => Err(error),
-                            Ok(()) => {
-                                let remaining =
-                                    qa::Hover::Times(hover.target().to_owned(), hover.times() - 1);
-                                repeat_hover(client, &remaining, false).await
+            let already_hovered = if let Some(unless) = check.hover_unless.as_deref() {
+                let (snapshot, _) = inspect(client).await?;
+                painted_named(&snapshot.nodes, unless)
+            } else {
+                false
+            };
+            if already_hovered {
+                // The declared revealed state is already established.
+            } else {
+                let hovered = if hover.times() > 1 {
+                    let first = qa::Hover::Once(hover.target().to_owned());
+                    match repeat_hover(client, &first, false).await {
+                        Err(error) => Err(error),
+                        Ok(()) => {
+                            tokio::time::sleep(Duration::from_millis(30)).await;
+                            nodes_after_first_hover = Some(inspect(client).await?.0.nodes.len());
+                            match park_pointer(client).await {
+                                Err(error) => Err(error),
+                                Ok(()) => {
+                                    let remaining = qa::Hover::Times(
+                                        hover.target().to_owned(),
+                                        hover.times() - 1,
+                                    );
+                                    repeat_hover(client, &remaining, false).await
+                                }
                             }
                         }
                     }
+                } else {
+                    repeat_hover(client, hover, false).await
+                };
+                if let Err(error) = hovered {
+                    open_error = Some(error);
+                } else if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
+                    let _ = wait_for_arrival(client, None, next).await?;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-            } else {
-                repeat_hover(client, hover, false).await
-            };
-            if let Err(error) = hovered {
-                open_error = Some(error);
-            } else if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
-                let _ = wait_for_arrival(client, None, next).await?;
-            } else {
-                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
 
@@ -2606,12 +2642,34 @@ fn arrived_without_navigation(
     destination: Option<&reach::Surface>,
     want_here: &str,
     named_document: bool,
+    active_document_matches: bool,
 ) -> bool {
-    !named_document
-        && destination.map_or_else(
+    if named_document {
+        active_document_matches
+            && destination.is_some_and(|surface| reach::on_surface(nodes, surface))
+    } else {
+        destination.map_or_else(
             || painted_named(nodes, want_here),
             |surface| reach::on_surface(nodes, surface),
         )
+    }
+}
+
+/// Whether the exact named document is the live selected tab.
+///
+/// Every project surface paints the same generic marker, so only the tab can
+/// distinguish which one owns it. Agency exposes `aria-current="page"`; Blitz
+/// maps that live state to `selected` rather than asking the runner to remember
+/// which arbitrary action may have changed documents.
+fn named_document_is_active(nodes: &[SemanticNode], want: &str) -> bool {
+    let tab_name = format!("{want}{want}");
+    nodes.iter().any(|node| {
+        node.role == "button"
+            && node.name.eq_ignore_ascii_case(&tab_name)
+            && node.selected
+            && node.visible
+            && painted_bounds(node).is_some()
+    })
 }
 
 /// Activate a surface opener without confusing a document tab for its Close
@@ -2634,7 +2692,10 @@ fn resolved_action_target(nodes: &[SemanticNode], want: &str) -> Option<String> 
     nodes
         .iter()
         .find(|node| {
-            selector_matches_node(node, want) && node.enabled && painted_bounds(node).is_some()
+            selector_matches_node(node, want)
+                && node.enabled
+                && node.visible
+                && painted_bounds(node).is_some()
         })
         .map(|node| node.name.clone())
 }
@@ -2788,6 +2849,9 @@ async fn find(
             state.push(if node.visible { "visible" } else { "hidden" });
             if !node.enabled {
                 state.push("disabled");
+            }
+            if node.selected {
+                state.push("selected");
             }
             if bounds[2] <= 0.0 || bounds[3] <= 0.0 {
                 state.push("0x0");
@@ -2945,9 +3009,12 @@ async fn locate_control(
                 roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
             })
             .filter(|n| selector_matches_node(n, want))
-            // Native paint geometry is authoritative. Blitz can lag the
-            // semantic `visible` flag after mounting a menu item, while a
-            // retained hidden control has a zero-sized box and is rejected.
+            // Actionability needs both semantic visibility and paint geometry.
+            // The runtime rejects a Click for a hidden semantic node even when
+            // that retained node still owns a stale non-zero layout box. Letting
+            // geometry overrule visibility selected a closed menu's old item
+            // instead of the mounted item with the same accessible name.
+            .filter(|node| node.visible)
             .filter_map(|node| painted_bounds(node).map(|bounds| (node, bounds)))
             .collect();
         // An explicit accessible name excludes broader substring matches.
@@ -2960,10 +3027,6 @@ async fn locate_control(
         // disabled. Filtering it first let a longer enabled substring steal
         // the action (`Send` became “Parse … before sending”).
         candidates.retain(|(node, _)| node.enabled);
-        // When both copies are painted, prefer the one whose semantic flag has
-        // caught up. A lagging false value remains a valid fallback.
-        candidates.sort_by_key(|(node, _)| !node.visible);
-
         // Prefer the modal in front, then the active surface, then global
         // chrome. Retained panes can keep enabled, painted controls with the
         // same name; tree order is not a statement about which one owns the
@@ -5731,10 +5794,11 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         InventoryClass, arrived_without_navigation, exact_selector_matches_node, inventory_class,
-        is_pagination_control, name_matches, named_document_opener_for, outcome_check_ids,
-        outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
-        pixels_change, pixels_hold, require_opaque_background, resolved_action_target,
-        retain_exact_candidates, saved_controls, selector_matches_node, stable_arrival,
+        is_pagination_control, name_matches, named_document_is_active, named_document_opener_for,
+        outcome_check_ids, outcome_verdict, pagination_advanced, painted_bounds, painted_named,
+        parse_key_chord, pixels_change, pixels_hold, require_opaque_background,
+        resolved_action_target, retain_exact_candidates, saved_controls, selector_matches_node,
+        stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
@@ -5915,6 +5979,7 @@ mod tests {
             prepare_press: false,
             prepare_key: None,
             hover: None,
+            hover_unless: None,
             after_prepare_hover: None,
             reveal_before_capture: None,
             click: click.map(str::to_owned),
@@ -5927,6 +5992,7 @@ mod tests {
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
+            destructive: false,
             subject: subject.into(),
             expect: Expect::Paints,
         }
@@ -5985,16 +6051,27 @@ mod tests {
     }
 
     #[test]
-    fn painted_actionability_ignores_lagging_visibility_but_rejects_zero_size() {
-        let mut mounted_menu_item = component("Opus", true, false);
-        assert_eq!(painted_bounds(&mounted_menu_item), mounted_menu_item.bounds);
+    fn actionability_rejects_hidden_retained_menu_items_with_stale_boxes() {
+        let mut retained_menu_item = component("Opus", true, false);
         assert_eq!(
-            resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
+            painted_bounds(&retained_menu_item),
+            retained_menu_item.bounds
+        );
+        assert_eq!(
+            resolved_action_target(std::slice::from_ref(&retained_menu_item), "menuitem:Opus"),
             None,
             "the fixture role has not yet been made a menuitem",
         );
 
-        mounted_menu_item.role = "menuitem".into();
+        retained_menu_item.role = "menuitem".into();
+        assert_eq!(
+            resolved_action_target(std::slice::from_ref(&retained_menu_item), "menuitem:Opus"),
+            None,
+            "a stale box does not make a hidden retained menu item actionable",
+        );
+
+        let mut mounted_menu_item = retained_menu_item.clone();
+        mounted_menu_item.visible = true;
         assert_eq!(
             resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
             Some("Opus".into()),
@@ -6002,10 +6079,6 @@ mod tests {
 
         mounted_menu_item.bounds = Some([0.0, 0.0, 0.0, 0.0]);
         assert!(painted_bounds(&mounted_menu_item).is_none());
-        assert_eq!(
-            resolved_action_target(std::slice::from_ref(&mounted_menu_item), "menuitem:Opus"),
-            None,
-        );
     }
 
     #[test]
@@ -6034,13 +6107,30 @@ mod tests {
             Some(&project),
             "fixture row",
             true,
+            false,
+        ));
+        assert!(arrived_without_navigation(
+            &nodes,
+            Some(&project),
+            "fixture row",
+            true,
+            true,
         ));
         assert!(arrived_without_navigation(
             &nodes,
             Some(&project),
             "fixture row",
             false,
+            false,
         ));
+    }
+
+    #[test]
+    fn a_named_document_is_active_only_when_its_exact_tab_is_selected() {
+        let mut tab = component("Fixture projectFixture project", true, true);
+        assert!(!named_document_is_active(&[tab.clone()], "Fixture project"));
+        tab.selected = true;
+        assert!(named_document_is_active(&[tab], "Fixture project"));
     }
 
     #[test]
