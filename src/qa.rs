@@ -295,10 +295,11 @@ pub struct Check {
     /// far as the renderer is concerned, and the defect lives in the
     /// enter/leave pair.
     ///
-    /// Whatever the count, the harness compares the tree before the first
-    /// entry with the tree after the last and fails when the extra entries left
-    /// nodes behind, so the abuse comes with its own assertion rather than
-    /// needing one written alongside.
+    /// When the count is greater than one, the harness compares the tree after
+    /// the first completed entry with the tree after the last. Comparing equal
+    /// hover states separates retained nodes from a legitimate hover affordance,
+    /// and a single entry does not mistake unrelated asynchronous rendering for
+    /// accumulation.
     pub hover: Option<Hover>,
     /// Repeatedly hover this node after [`prepare`](Self::prepare).
     ///
