@@ -29,7 +29,7 @@ use crate::computed_style::{
     font_size, opaque_background, transparent_background, wait_for_larger_font,
 };
 use crate::diagnostics::{dom, metrics, nodes, panes, spill, transcript};
-use crate::inspector::{Client, inspect};
+use crate::inspector::{Client, inspect, inspect_subtree};
 use crate::interaction::{
     click_named, hover_over, press_key, scroll, scroll_events, type_keys, type_text,
 };
@@ -58,12 +58,31 @@ async fn wait_for_arrival(
 ) -> Result<bool> {
     let deadline = tokio::time::Instant::now() + check_timeout(900);
     let mut painted_streak = 0;
+    let mut root = None;
     loop {
-        let (tree, _) = inspect(client).await?;
+        let tree = if let Some(node_id) = root {
+            match inspect_subtree(client, node_id).await {
+                Ok((tree, _)) => tree,
+                // A reconciliation may replace the node between samples. One
+                // full read reacquires it; a stale id is not a failed check.
+                Err(_) => {
+                    root = None;
+                    painted_streak = 0;
+                    inspect(client).await?.0
+                }
+            }
+        } else {
+            inspect(client).await?.0
+        };
         let arrived = destination.map_or_else(
             || painted_named(&tree.nodes, want_here),
             |surface| reach::on_surface(&tree.nodes, surface),
         );
+        if arrived && root.is_none() {
+            root = arrival_anchor(&tree.nodes, destination, want_here);
+        } else if !arrived && root.is_some() {
+            root = None;
+        }
         if stable_arrival(&mut painted_streak, arrived) {
             return Ok(true);
         }
@@ -72,6 +91,28 @@ async fn wait_for_arrival(
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// The smallest node that proves an arrival condition.
+///
+/// Its id is used only as the next snapshot root. If the framework remounts it,
+/// the caller clears the id and reacquires from one full snapshot.
+fn arrival_anchor(
+    nodes: &[SemanticNode],
+    destination: Option<&reach::Surface>,
+    want_here: &str,
+) -> Option<u64> {
+    let marker = destination.and_then(|surface| surface.marker.as_deref());
+    nodes
+        .iter()
+        .find(|node| {
+            reach::onscreen(node)
+                && marker.map_or_else(
+                    || selector_matches_node(node, want_here),
+                    |marker| node.name.contains(marker),
+                )
+        })
+        .map(|node| node.id)
 }
 
 /// Wait for the specific document tab, not merely any document-shaped pane.
@@ -92,14 +133,42 @@ async fn wait_for_navigation_arrival(
     }
     let deadline = tokio::time::Instant::now() + check_timeout(900);
     let mut painted_streak = 0;
+    let mut selected_tab = None;
     loop {
-        let (tree, _) = inspect(client).await?;
+        let (tree, scoped) = if let Some(node_id) = selected_tab {
+            match inspect_subtree(client, node_id).await {
+                Ok((tree, _)) => (tree, true),
+                Err(_) => {
+                    selected_tab = None;
+                    painted_streak = 0;
+                    (inspect(client).await?.0, false)
+                }
+            }
+        } else {
+            (inspect(client).await?.0, false)
+        };
         // The exact selected tab disambiguates the incoming document from any
         // retained outgoing pane. Do not require the final action target here:
         // it may intentionally live in a collapsed or search-deferred section
         // that can only be materialized after navigation has completed.
         let arrived = named_document_is_active(&tree.nodes, document_name)
-            && destination.is_some_and(|surface| reach::on_surface(&tree.nodes, surface));
+            && (scoped
+                || destination.is_some_and(|surface| reach::on_surface(&tree.nodes, surface)));
+        if arrived && selected_tab.is_none() {
+            let tab_name = format!("{document_name}{document_name}");
+            selected_tab = tree
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.role.eq_ignore_ascii_case("button")
+                        && node.name.eq_ignore_ascii_case(&tab_name)
+                        && node.selected
+                        && reach::onscreen(node)
+                })
+                .map(|node| node.id);
+        } else if !arrived && selected_tab.is_some() {
+            selected_tab = None;
+        }
         if stable_arrival(&mut painted_streak, arrived) {
             return Ok(true);
         }
@@ -622,7 +691,10 @@ fn start_host(
             // read its own environment and ignore this.
             .env("QA_INSPECT_PAGE", page)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            // Host diagnostics belong to the sweep artifact. Discarding them
+            // turns a startup or renderer failure into only "never announced
+            // a descriptor", which hides the one message that explains it.
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .map_err(|error| format!("launching {}: {error}", host.display()))?,
     );
@@ -895,8 +967,10 @@ async fn run_qa(
         );
     }
 
-    let mut results: Vec<(&qa::Check, std::result::Result<(), String>)> = Vec::new();
+    let mut results: Vec<CheckResult<'_>> = Vec::new();
     for check in selected {
+        let full_check_started = Instant::now();
+        let mut retries = 0;
         // Navigation and disclosure materialization are suite setup. Give them
         // a bounded but realistic budget; the measured control action below
         // switches the transport to the sub-second contract.
@@ -1211,6 +1285,7 @@ async fn run_qa(
                 click_named_quiet(client, want).await.map(|_| ())
             };
             if prepared.is_err() {
+                retries += 1;
                 // A retained sibling document may expose the same target name
                 // and make the global precheck skip expansion on the selected
                 // document. Recover against the check's declared destination,
@@ -1614,8 +1689,8 @@ async fn run_qa(
                 | qa::Expect::Contrast
                 | qa::Expect::FontSizeGrows
         );
-        let (after, settle_error) = if live_paint_expect {
-            (inspect(client).await?.0, None)
+        let (after, settle_error, settle_iterations) = if live_paint_expect {
+            (inspect(client).await?.0, None, 0)
         } else if action_error.is_none() || transport_timed_out {
             settle_for_outcome(
                 client,
@@ -1626,7 +1701,7 @@ async fn run_qa(
             )
             .await?
         } else {
-            (inspect(client).await?.0, None)
+            (inspect(client).await?.0, None, 0)
         };
         let mut outcome = if live_paint_expect {
             match action_error {
@@ -1698,14 +1773,27 @@ async fn run_qa(
                 ),
             }
         }
-        results.push((check, outcome));
+        results.push(CheckResult {
+            check,
+            outcome,
+            duration_ms: full_check_started.elapsed().as_millis() as u64,
+            settle_iterations,
+            retries,
+        });
         if check.settle_after_ms > 0 {
             tokio::time::sleep(Duration::from_millis(check.settle_after_ms)).await;
         }
     }
 
-    let failed = results.iter().filter(|(_, out)| out.is_err()).count();
-    let tally = qa::tally(&results);
+    let failed = results
+        .iter()
+        .filter(|result| result.outcome.is_err())
+        .count();
+    let tally_input: Vec<_> = results
+        .iter()
+        .map(|result| (result.check, result.outcome.clone()))
+        .collect();
+    let tally = qa::tally(&tally_input);
     let mut groups: Vec<_> = tally.iter().collect();
     groups.sort_by_key(|(name, _)| *name);
 
@@ -1852,7 +1940,7 @@ async fn settle_for_outcome(
     before: &[SemanticNode],
     action_target: Option<&str>,
     action_node_id: Option<u64>,
-) -> Result<(AgentSnapshot, Option<String>)> {
+) -> Result<(AgentSnapshot, Option<String>, u32)> {
     let outcome_ms = if check.outcome_timeout_ms == 0 {
         900
     } else {
@@ -1861,13 +1949,15 @@ async fn settle_for_outcome(
     let deadline = tokio::time::Instant::now() + check_timeout(outcome_ms);
     let stable_for = Duration::from_millis(check.stable_for_ms);
     let mut stability = OutcomeStability::default();
+    let mut iterations = 0;
     loop {
         let (after, _) = inspect(client).await?;
+        iterations += 1;
         let now = tokio::time::Instant::now();
         let passing =
             outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok();
         if stability.observe(now, semantic_fingerprint(&after.nodes), passing, stable_for) {
-            return Ok((after, None));
+            return Ok((after, None, iterations));
         }
         if now >= deadline {
             let error = (passing && !stable_for.is_zero()).then(|| {
@@ -1877,7 +1967,7 @@ async fn settle_for_outcome(
                     check_timeout(outcome_ms).as_millis()
                 )
             });
-            return Ok((after, error));
+            return Ok((after, error, iterations));
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -2017,6 +2107,19 @@ struct Report {
     checks: Vec<CheckRow>,
 }
 
+struct CheckResult<'a> {
+    check: &'a qa::Check,
+    outcome: std::result::Result<(), String>,
+    /// End-to-end check time, including setup and teardown around the measured
+    /// interaction. The verdict's stricter action budget is enforced
+    /// separately; this is artifact cost.
+    duration_ms: u64,
+    /// Semantic snapshots taken while waiting for the declared outcome.
+    settle_iterations: u32,
+    /// Explicitly repeated actions after a failed first attempt.
+    retries: u32,
+}
+
 #[derive(serde::Serialize)]
 struct GroupRow {
     name: String,
@@ -2031,18 +2134,28 @@ struct CheckRow {
     verdict: &'static str,
     group: String,
     id: String,
+    duration_ms: u64,
+    settle_iterations: u32,
+    retries: u32,
     error: String,
     what: String,
 }
 
-impl From<&(&qa::Check, std::result::Result<(), String>)> for CheckRow {
-    fn from((check, outcome): &(&qa::Check, std::result::Result<(), String>)) -> Self {
+impl From<&CheckResult<'_>> for CheckRow {
+    fn from(result: &CheckResult<'_>) -> Self {
         Self {
-            verdict: if outcome.is_ok() { "pass" } else { "fail" },
-            group: check.group.clone(),
-            id: check.id.clone(),
-            error: outcome.clone().err().unwrap_or_default(),
-            what: check.what.clone(),
+            verdict: if result.outcome.is_ok() {
+                "pass"
+            } else {
+                "fail"
+            },
+            group: result.check.group.clone(),
+            id: result.check.id.clone(),
+            duration_ms: result.duration_ms,
+            settle_iterations: result.settle_iterations,
+            retries: result.retries,
+            error: result.outcome.clone().err().unwrap_or_default(),
+            what: result.check.what.clone(),
         }
     }
 }
@@ -3231,6 +3344,8 @@ struct SavedControl {
     surface: String,
     #[serde(default)]
     dom_id: Option<String>,
+    #[serde(default)]
+    slot: Option<String>,
     role: String,
     name: String,
     classification: String,
@@ -3247,6 +3362,22 @@ fn saved_controls(report: &str) -> Result<Vec<SavedControl>, String> {
         .map_err(|error| format!("inventory report is not valid TOON: {error}"))
 }
 
+fn saved_control_node(control: &SavedControl) -> SemanticNode {
+    SemanticNode {
+        dom_id: control.dom_id.clone(),
+        id: 0,
+        parent: None,
+        role: control.role.clone(),
+        name: control.name.clone(),
+        value: None,
+        enabled: !control.classification.contains("disabled"),
+        visible: !control.classification.contains("unreachable"),
+        selected: false,
+        bounds: Some([0.0, 0.0, 1.0, 1.0]),
+        slot: control.slot.clone(),
+    }
+}
+
 fn reconcile_inventory(
     inventory: &std::path::Path,
     checks_dir: Option<&std::path::Path>,
@@ -3255,6 +3386,7 @@ fn reconcile_inventory(
     struct MissingRow {
         surface: String,
         dom_id: Option<String>,
+        slot: Option<String>,
         role: String,
         name: String,
         classification: String,
@@ -3280,19 +3412,7 @@ fn reconcile_inventory(
     let mut missing = Vec::new();
 
     for control in &controls {
-        let node = SemanticNode {
-            dom_id: control.dom_id.clone(),
-            id: 0,
-            parent: None,
-            role: control.role.clone(),
-            name: control.name.clone(),
-            value: None,
-            enabled: !control.classification.contains("disabled"),
-            visible: !control.classification.contains("unreachable"),
-            selected: false,
-            bounds: Some([0.0, 0.0, 1.0, 1.0]),
-            slot: None,
-        };
+        let node = saved_control_node(control);
         let matched = outcome_check_ids(&node, &checks);
         if control.classification == "excluded-manual" {
             excluded_manual += 1;
@@ -3301,6 +3421,7 @@ fn reconcile_inventory(
             missing.push(MissingRow {
                 surface: control.surface.clone(),
                 dom_id: control.dom_id.clone(),
+                slot: control.slot.clone(),
                 role: control.role.clone(),
                 name: control.name.clone(),
                 classification: control.classification.clone(),
@@ -3310,6 +3431,7 @@ fn reconcile_inventory(
             missing.push(MissingRow {
                 surface: control.surface.clone(),
                 dom_id: control.dom_id.clone(),
+                slot: control.slot.clone(),
                 role: control.role.clone(),
                 name: control.name.clone(),
                 classification: if control.classification.contains("isolated") {
@@ -3401,6 +3523,7 @@ async fn run_inventory(
         surface: String,
         id: u64,
         dom_id: Option<String>,
+        slot: Option<String>,
         role: String,
         name: String,
         classification: String,
@@ -3675,6 +3798,7 @@ async fn run_inventory(
                 surface: surface.name.clone(),
                 id: node.id,
                 dom_id: node.dom_id.clone(),
+                slot: node.slot.clone(),
                 role: node.role.clone(),
                 name: node.name.clone(),
                 classification: classification.to_owned(),
@@ -5115,7 +5239,7 @@ mod tests {
         named_document_is_active, named_document_is_active_with_permanent,
         named_document_opener_for, outcome_check_ids, outcome_verdict, pagination_advanced,
         painted_bounds, painted_named, pixels_change, pixels_hold, resolved_action_target,
-        rgb_pixels_hold, saved_controls, selector_matches_node, stable_arrival,
+        rgb_pixels_hold, saved_control_node, saved_controls, selector_matches_node, stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::interaction::parse_key_chord;
@@ -5722,6 +5846,23 @@ mod tests {
         assert_eq!(rows[0].role, "switch");
         assert_eq!(rows[0].name, "Enable inspection");
         assert_eq!(rows[0].classification, "isolated-unverified");
+    }
+
+    #[test]
+    fn offline_inventory_keeps_slot_selector_credit() {
+        let rows = saved_controls(
+            "controls[1]{surface,id,dom_id,slot,role,name,classification,reason}:\n  \
+             settings,7,theme-accent,complex-color-wheel,button,Accent,outcome-declared,matched",
+        )
+        .expect("controls");
+        let mut check = check("accent-wheel", None, "@complex-color-wheel");
+        check.covers.push("@complex-color-wheel".into());
+
+        assert_eq!(rows[0].slot.as_deref(), Some("complex-color-wheel"));
+        assert_eq!(
+            outcome_check_ids(&saved_control_node(&rows[0]), &[check]),
+            vec!["accent-wheel"]
+        );
     }
 
     #[test]

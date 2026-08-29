@@ -358,10 +358,24 @@ impl Client {
 /// Most commands need this exact request. Keeping it beside the transport
 /// prevents every command module from rebuilding the protocol exchange.
 pub async fn inspect(client: &mut Client) -> Result<(AgentSnapshot, f64)> {
+    inspect_from(client, None).await
+}
+
+/// Read only one semantic subtree.
+///
+/// Polling a known destination from the document root makes interaction
+/// latency proportional to every unrelated node in the application. The
+/// protocol already accepts a semantic root, so stabilization can acquire the
+/// target once and observe only the component that must remain mounted.
+pub async fn inspect_subtree(client: &mut Client, root: u64) -> Result<(AgentSnapshot, f64)> {
+    inspect_from(client, Some(root)).await
+}
+
+async fn inspect_from(client: &mut Client, root: Option<u64>) -> Result<(AgentSnapshot, f64)> {
     let started = Instant::now();
     let answer = client
         .agent(&AgentControlRequest::Inspect {
-            root: None,
+            root,
             max_depth: 40,
         })
         .await?;

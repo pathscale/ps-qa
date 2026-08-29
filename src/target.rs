@@ -35,12 +35,9 @@ pub(crate) fn painted_bounds(node: &SemanticNode) -> Option<[f64; 4]> {
 /// `role:name` is accepted for precise subjects such as rename textboxes; bare
 /// names retain the normal substring behavior used by application manifests.
 pub(crate) fn painted_named(nodes: &[SemanticNode], want: &str) -> bool {
-    let (role, name) = want.split_once(':').unwrap_or(("", want));
-    nodes.iter().any(|node| {
-        (role.is_empty() || node.role == role)
-            && node.name.contains(name)
-            && painted_bounds(node).is_some()
-    })
+    nodes
+        .iter()
+        .any(|node| selector_matches_node(node, want) && painted_bounds(node).is_some())
 }
 
 /// Click one node by id, with no name lookup in between.
@@ -322,7 +319,7 @@ pub(crate) fn selector_matches_node(node: &SemanticNode, selector: &str) -> bool
         return node.slot.as_deref() == Some(slot);
     }
     if let Some((role, name)) = selector.split_once(':')
-        && role == node.role
+        && role.eq_ignore_ascii_case(&node.role)
     {
         return name_matches(&node.name, name);
     }
@@ -338,7 +335,7 @@ pub(crate) fn exact_selector_matches_node(node: &SemanticNode, selector: &str) -
         return node.slot.as_deref() == Some(slot);
     }
     if let Some((role, name)) = selector.split_once(':') {
-        return role == node.role && node.name.eq_ignore_ascii_case(name);
+        return role.eq_ignore_ascii_case(&node.role) && node.name.eq_ignore_ascii_case(name);
     }
     node.name.eq_ignore_ascii_case(selector)
 }
@@ -388,5 +385,21 @@ mod tests {
     fn dom_id_does_not_fall_back_to_the_accessible_name() {
         let anonymous = node(None, "settings-save");
         assert!(!selector_matches_node(&anonymous, "#settings-save"));
+    }
+
+    #[test]
+    fn role_and_name_globs_have_one_case_insensitive_semantics() {
+        let save = node(None, "Save Settings");
+        assert!(selector_matches_node(&save, "BUTTON:save*"));
+        assert!(selector_matches_node(&save, "button:*settings"));
+        assert!(selector_matches_node(&save, "*VE SET*"));
+        assert!(painted_named(&[save], "BuTtOn:*SETTINGS"));
+    }
+
+    #[test]
+    fn a_bare_selector_matches_names_not_roles() {
+        let save = node(None, "Save settings");
+        assert!(!selector_matches_node(&save, "button"));
+        assert!(selector_matches_node(&save, "save"));
     }
 }
