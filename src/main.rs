@@ -1281,9 +1281,12 @@ async fn wait_for_navigation_arrival(
     let mut painted_streak = 0;
     loop {
         let (tree, _) = inspect(client).await?;
+        // The exact selected tab disambiguates the incoming document from any
+        // retained outgoing pane. Do not require the final action target here:
+        // it may intentionally live in a collapsed or search-deferred section
+        // that can only be materialized after navigation has completed.
         let arrived = named_document_is_active(&tree.nodes, document_name)
-            && destination.is_some_and(|surface| reach::on_surface(&tree.nodes, surface))
-            && painted_named(&tree.nodes, want_here);
+            && destination.is_some_and(|surface| reach::on_surface(&tree.nodes, surface));
         if stable_arrival(&mut painted_streak, arrived) {
             return Ok(true);
         }
@@ -1435,58 +1438,14 @@ async fn scroll_hover_target_into_view(
     client: &mut Client,
     want: &str,
 ) -> std::result::Result<u64, String> {
-    let deadline = tokio::time::Instant::now() + check_timeout(900);
-    let mut previous = None;
-    let mut stable = 0_u8;
-    let (node_id, bounds, viewport) = loop {
-        let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
-        let viewport = viewport_of(&tree);
-        let candidate = tree.nodes.iter().find_map(|node| {
-            (selector_matches_node(node, want)
-                && node.visible
-                && node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
-            .then_some((
-                node.id,
-                node.bounds.expect("a sized hover target has bounds"),
-            ))
-        });
-        let candidate_id = candidate.map(|(id, _)| id);
-        if candidate_id.is_some() && candidate_id == previous {
-            stable = stable.saturating_add(1);
-        } else {
-            previous = candidate_id;
-            stable = u8::from(candidate_id.is_some());
-        }
-        if stable >= 3 {
-            let (id, bounds) = candidate.expect("a stable hover target is present");
-            break (id, bounds, viewport);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "could not hover {want:?}: no visible, sized matching node"
-            ));
-        }
-        // A missing target may be behind a requestAnimationFrame-driven lazy
-        // mount. Polling that path at frame cadence can monopolise the control
-        // loop and prevent the very frame that reveals it. Once present, use
-        // frame cadence to prove the node id is stable before acting.
-        tokio::time::sleep(Duration::from_millis(if candidate_id.is_some() {
-            16
-        } else {
-            50
-        }))
-        .await;
-    };
-
-    if offscreen(bounds, viewport) {
-        client
-            .agent(&AgentControlRequest::Act(AgentAction::ScrollIntoView {
-                node_id,
-            }))
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(node_id)
+    let explicit_role = want.split_once(':').map(|(role, _)| role);
+    let any_role = ["*"];
+    let roles = explicit_role.as_slice();
+    let roles = if roles.is_empty() { &any_role } else { roles };
+    locate_control(client, want, roles)
+        .await
+        .map(|(node_id, _)| node_id)
+        .map_err(|error| format!("could not hover {want:?}: {error}"))
 }
 
 /// Capture one declared rendered region through the renderer's own paint path.
@@ -2222,7 +2181,20 @@ async fn run_qa(
                 if let Err(error) = hovered {
                     open_error = Some(error);
                 } else if let Some(next) = check.prepare.as_deref().or(check.click.as_deref()) {
-                    let _ = wait_for_arrival(client, None, next).await?;
+                    if !wait_for_arrival(client, None, next).await? {
+                        // A virtualized row can reconcile after ScrollIntoView
+                        // and lose the hover that was sent to its prior node.
+                        // Reacquire it once; silently continuing turns a setup
+                        // race into a misleading "could not click" failure.
+                        if let Err(error) = repeat_hover(client, hover, false).await {
+                            open_error = Some(error);
+                        } else if !wait_for_arrival(client, None, next).await? {
+                            open_error = Some(format!(
+                                "hovering {:?} did not reveal {next:?}",
+                                hover.target()
+                            ));
+                        }
+                    }
                 } else {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
@@ -2246,7 +2218,7 @@ async fn run_qa(
             } else {
                 false
             };
-            let prepared = if already_prepared {
+            let mut prepared = if already_prepared {
                 Ok(())
             } else if let Some(key) = check.prepare_key.as_deref() {
                 press_key(client, key, 1, want, true).await.map(|_| ())
@@ -2255,6 +2227,32 @@ async fn run_qa(
             } else {
                 click_named_quiet(client, want).await.map(|_| ())
             };
+            if prepared.is_err() {
+                // A retained sibling document may expose the same target name
+                // and make the global precheck skip expansion on the selected
+                // document. Recover against the check's declared destination,
+                // then retry the exact preparation once.
+                let declared_surface = check.open.as_deref().and_then(surface_for_opener);
+                let live_surface = if declared_surface.is_some() {
+                    declared_surface
+                } else {
+                    let (snapshot, _) = inspect(client).await?;
+                    reach::surfaces()
+                        .iter()
+                        .find(|surface| reach::on_surface(&snapshot.nodes, surface))
+                };
+                if let Some(surface) = live_surface {
+                    let _ = expand_everything(client, surface).await?;
+                    let _ = reveal_deferred_content(client, surface, want).await?;
+                    prepared = if let Some(key) = check.prepare_key.as_deref() {
+                        press_key(client, key, 1, want, true).await.map(|_| ())
+                    } else if check.prepare_press {
+                        press_named(client, want).await
+                    } else {
+                        click_named_quiet(client, want).await.map(|_| ())
+                    };
+                }
+            }
             if let Err(error) = prepared {
                 /*
                  * Say what *is* addressable, not just what was not found.
@@ -3058,6 +3056,29 @@ fn viewport_of(snapshot: &AgentSnapshot) -> (f64, f64) {
     (0.0, if bottom > f64::MIN { bottom } else { f64::MAX })
 }
 
+/// The vertical hit-test viewport that actually owns a semantic node.
+///
+/// App chrome lives outside `main` and legitimately uses the window viewport.
+/// Surface content is a descendant of `main`; treating its negative translated
+/// scroll coordinates as window-visible sends pointer events behind the tab
+/// strip instead of revealing the row inside its panel.
+fn viewport_for_node(snapshot: &AgentSnapshot, node_id: u64) -> (f64, f64) {
+    let mut cursor = Some(node_id);
+    for _ in 0..32 {
+        let Some(id) = cursor else { break };
+        let Some(node) = snapshot.nodes.iter().find(|node| node.id == id) else {
+            break;
+        };
+        if node.role == "main"
+            && let Some(bounds) = node.bounds
+        {
+            return (bounds[1], bounds[1] + bounds[3]);
+        }
+        cursor = node.parent;
+    }
+    viewport_of(snapshot)
+}
+
 /// Whether a node's box lies outside the window, so pressing it would land on
 /// nothing.
 ///
@@ -3096,7 +3117,7 @@ async fn locate_control(
      * Doing that can report the root unreachable while a pressable copy is on
      * screen because an overflowed copy came first in the tree.
      */
-    let pick = |snapshot: &AgentSnapshot, viewport: (f64, f64)| -> Option<(u64, [f64; 4])> {
+    let pick = |snapshot: &AgentSnapshot| -> Option<(u64, [f64; 4])> {
         let modal_scope: HashSet<u64> = reach::dismissers(&snapshot.nodes)
             .first()
             .map(|(id, _)| reach::enclosing_dialog(&snapshot.nodes, *id))
@@ -3114,7 +3135,9 @@ async fn locate_control(
             .nodes
             .iter()
             .filter(|n| {
-                roles.is_empty() && reach::interactive(n) || roles.contains(&n.role.as_str())
+                roles.contains(&"*")
+                    || roles.is_empty() && reach::interactive(n)
+                    || roles.contains(&n.role.as_str())
             })
             .filter(|n| selector_matches_node(n, want))
             // Actionability needs both semantic visibility and paint geometry.
@@ -3140,16 +3163,16 @@ async fn locate_control(
         // same name; tree order is not a statement about which one owns the
         // interaction the caller can currently see.
         for scope in [&modal_scope, &surface_scope] {
-            if let Some((node, bounds)) = candidates
-                .iter()
-                .find(|(node, bounds)| scope.contains(&node.id) && !offscreen(*bounds, viewport))
-            {
+            if let Some((node, bounds)) = candidates.iter().find(|(node, bounds)| {
+                scope.contains(&node.id)
+                    && !offscreen(*bounds, viewport_for_node(snapshot, node.id))
+            }) {
                 return Some((node.id, *bounds));
             }
         }
         if let Some((node, bounds)) = candidates
             .iter()
-            .find(|(_, bounds)| !offscreen(*bounds, viewport))
+            .find(|(node, bounds)| !offscreen(*bounds, viewport_for_node(snapshot, node.id)))
         {
             return Some((node.id, *bounds));
         }
@@ -3184,10 +3207,10 @@ async fn locate_control(
     };
 
     let (snapshot, _) = inspect(client).await?;
-    let viewport = viewport_of(&snapshot);
-    let Some((id, bounds)) = pick(&snapshot, viewport) else {
+    let Some((id, bounds)) = pick(&snapshot) else {
         bail!("no visible, enabled, sized semantic control matching it");
     };
+    let viewport = viewport_for_node(&snapshot, id);
     if !offscreen(bounds, viewport) {
         return Ok((id, bounds));
     }
@@ -3213,11 +3236,11 @@ async fn locate_control(
         // the node inside its local list, the next exposes that list in the
         // outer surface.
         let (settled, _) = inspect(client).await?;
-        let viewport = viewport_of(&settled);
-        let Some(found) = pick(&settled, viewport) else {
+        let Some(found) = pick(&settled) else {
             bail!("no visible, enabled, sized semantic control matching it");
         };
         target = found;
+        let viewport = viewport_for_node(&settled, target.0);
         if !offscreen(target.1, viewport) {
             return Ok(target);
         }
@@ -5918,10 +5941,11 @@ mod tests {
         outcome_verdict, pagination_advanced, painted_bounds, painted_named, parse_key_chord,
         pixels_change, pixels_hold, require_opaque_background, resolved_action_target,
         retain_exact_candidates, saved_controls, selector_matches_node, stable_arrival,
+        viewport_for_node,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::qa::{Check, Expect};
-    use blitz_control_protocol::{CapturedImage, SemanticNode};
+    use blitz_control_protocol::{AgentSnapshot, CapturedImage, SemanticNode};
     use std::collections::HashSet;
 
     fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
@@ -5937,6 +5961,30 @@ mod tests {
             bounds: Some([0.0, 0.0, 20.0, 20.0]),
             slot: None,
         }
+    }
+
+    #[test]
+    fn surface_content_uses_main_viewport_while_chrome_uses_the_window() {
+        let mut main = component("", true, true);
+        main.id = 10;
+        main.role = "main".into();
+        main.bounds = Some([0.0, 58.0, 1344.0, 842.0]);
+
+        let mut content = component("Row action", true, true);
+        content.id = 11;
+        content.parent = Some(main.id);
+        content.bounds = Some([962.0, -3.0, 28.0, 28.0]);
+
+        let mut chrome = component("Project tab", true, true);
+        chrome.id = 12;
+        chrome.bounds = Some([20.0, 15.0, 120.0, 35.0]);
+
+        let snapshot = AgentSnapshot {
+            nodes: vec![main, content, chrome],
+            ..AgentSnapshot::default()
+        };
+        assert_eq!(viewport_for_node(&snapshot, 11), (58.0, 900.0));
+        assert_eq!(viewport_for_node(&snapshot, 12), (0.0, 900.0));
     }
 
     #[test]
