@@ -578,6 +578,31 @@ fn pixels_change(before: &CapturedImage, after: &CapturedImage) -> std::result::
     }
 }
 
+/// Wait only for the first authored hover frame, not for the whole animation.
+///
+/// Capturing immediately after pointer delivery races the renderer: a valid
+/// transition still has its pre-hover pixels until the next frame. A 100 ms
+/// ceiling keeps the interaction contract responsive while allowing that one
+/// frame to be produced.
+async fn wait_for_pixels_change(
+    client: &mut Client,
+    selector: &str,
+    before: &CapturedImage,
+) -> std::result::Result<(), String> {
+    let deadline = tokio::time::Instant::now() + check_timeout(100);
+
+    loop {
+        let after = capture_region(client, selector).await?;
+        if pixels_change(before, &after).is_ok() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return pixels_change(before, &after);
+        }
+        tokio::time::sleep(Duration::from_millis(8)).await;
+    }
+}
+
 /// Launch a host for one page and wait for the descriptor it announces.
 ///
 /// Waiting for the line rather than sleeping is what makes this reliable on a
@@ -1316,11 +1341,43 @@ async fn run_qa(
                 pixel_outcome = Some(measured);
             } else if check.expect == qa::Expect::PixelsChange {
                 let measured = async {
+                    let node_id = scroll_hover_target_into_view(client, hover.target()).await?;
                     park_pointer(client).await?;
                     let before = capture_region(client, &check.subject).await?;
-                    repeat_hover(client, hover, false).await?;
-                    let after = capture_region(client, &check.subject).await?;
-                    pixels_change(&before, &after)
+                    let event_driven = client
+                        .arm_paint_events()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let require_events = std::env::var_os("PS_QA_REQUIRE_PAINT_EVENTS").is_some();
+                    if require_events && !event_driven {
+                        return Err("the inspector does not provide paint events".to_owned());
+                    }
+                    client
+                        .agent(&AgentControlRequest::Act(AgentAction::Hover { node_id }))
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    let paint_committed = if event_driven {
+                        client
+                            .wait_for_paint(check_timeout(100))
+                            .await
+                            .map_err(|error| error.to_string())?
+                    } else {
+                        false
+                    };
+                    if require_events && !paint_committed {
+                        return Err("no paint event arrived after hover".to_owned());
+                    }
+
+                    if paint_committed {
+                        let after = capture_region(client, &check.subject).await?;
+                        pixels_change(&before, &after)
+                    } else {
+                        // Compatibility with runtimes and headless hosts that
+                        // predate paint notifications. Bounded to 100 ms and
+                        // removed once the fleet has adopted the stream.
+                        wait_for_pixels_change(client, &check.subject, &before).await
+                    }
                 }
                 .await;
                 pixel_outcome = Some(measured);
@@ -4517,13 +4574,14 @@ pub async fn run() -> Result<()> {
             println!("{}", report::dump(&answer.envelope, 2000));
         }
         cli::Command::Watch { seconds } => {
-            println!("\n== observing metrics/console/runtimeErrors for {seconds}s ==");
+            println!("\n== observing paint/metrics/console/runtimeErrors for {seconds}s ==");
             // Tolerates a protocol error on purpose: the server answers
             // `streamingUnavailable` because `observe` is not implemented, and
             // reporting that is more useful than exiting on it.
             let answer = client
                 .diagnostics_envelope(&DiagnosticsRequest::Observe {
                     streams: vec![
+                        DebugStream::Paint,
                         DebugStream::Metrics,
                         DebugStream::Console,
                         DebugStream::RuntimeErrors,

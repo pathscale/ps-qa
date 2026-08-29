@@ -4,14 +4,15 @@
 //! rather than newline-delimited, which is why a naive socket read hangs, and
 //! `endpoint_libs`' `framed_json` is the same codec the server writes with.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
 
 use blitz_control_protocol::{
-    AgentControlRequest, AgentSnapshot, DebugDescriptor, DebugProtocolError, DebugResponse,
-    DiagnosticsRequest, decode_response, decode_rpc, encode_agent_request,
-    encode_diagnostics_request, encode_rpc,
+    AgentControlRequest, AgentSnapshot, DebugDescriptor, DebugEvent, DebugProtocolError,
+    DebugResponse, DebugStream, DiagnosticsRequest, decode_diagnostics_event, decode_response,
+    decode_rpc, encode_agent_request, encode_diagnostics_request, encode_rpc,
 };
 use endpoint_libs::libs::ws::mcp_wire::{
     JsonRpcId, JsonRpcMessage, JsonRpcRequest, MCP_PROTOCOL_VERSION,
@@ -155,6 +156,7 @@ pub struct Client {
     stream: Box<dyn MessageStream>,
     next_id: i64,
     request_timeout: Duration,
+    events: VecDeque<DebugEvent>,
 }
 
 impl Client {
@@ -166,6 +168,7 @@ impl Client {
             stream: Box::new(TransportStream::new(framed_json(stream))),
             next_id: 0,
             request_timeout: REQUEST_TIMEOUT,
+            events: VecDeque::new(),
         })
     }
 
@@ -206,6 +209,9 @@ impl Client {
                 .map_err(|error| eyre!("reading from the inspector failed: {error}"))?;
             if response_id(&message).as_ref() == Some(id) {
                 return Ok(message);
+            }
+            if let Ok(event) = decode_diagnostics_event(message) {
+                self.events.push_back(event);
             }
         }
     }
@@ -258,6 +264,57 @@ impl Client {
         let frame = encode_diagnostics_request(id.clone(), request).map_err(protocol_error)?;
         let message = self.exchange(frame, &id).await?;
         Answer::new(message)
+    }
+
+    /// Establish a paint-event baseline immediately before driving input.
+    ///
+    /// New runtimes answer with `Ack` and suppress any revision that predates
+    /// this call. Older runtimes answer `streamingUnavailable`; callers retain
+    /// their bounded compatibility fallback in that case.
+    pub async fn arm_paint_events(&mut self) -> Result<bool> {
+        self.events
+            .retain(|event| !matches!(event, DebugEvent::PaintCommitted { .. }));
+        match self
+            .diagnostics(&DiagnosticsRequest::Observe {
+                streams: vec![DebugStream::Paint],
+            })
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.to_string().contains("streamingUnavailable") => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Wait for the first real frame committed after an armed interaction.
+    pub async fn wait_for_paint(&mut self, within: Duration) -> Result<bool> {
+        if let Some(index) = self
+            .events
+            .iter()
+            .position(|event| matches!(event, DebugEvent::PaintCommitted { .. }))
+        {
+            self.events.remove(index);
+            return Ok(true);
+        }
+
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            let message = match timeout(remaining, self.stream.recv()).await {
+                Ok(Some(message)) => message,
+                Ok(None) | Err(_) => return Ok(false),
+            };
+            let message = message
+                .map_err(|error| eyre!("reading paint event from inspector failed: {error}"))?;
+            match decode_diagnostics_event(message) {
+                Ok(DebugEvent::PaintCommitted { .. }) => return Ok(true),
+                Ok(event) => self.events.push_back(event),
+                Err(_) => {}
+            }
+        }
     }
 
     /// The same call, but returning a protocol-level error rather than failing
