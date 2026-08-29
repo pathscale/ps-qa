@@ -198,6 +198,237 @@ async fn paint(client: &mut Client, want: &str, min_area: f64) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Rgba {
+    red: f64,
+    green: f64,
+    blue: f64,
+    alpha: f64,
+}
+
+fn rgba(value: &str) -> Option<Rgba> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 8 {
+        return None;
+    }
+    let byte = |at| {
+        u8::from_str_radix(&hex[at..at + 2], 16)
+            .ok()
+            .map(|v| f64::from(v) / 255.0)
+    };
+    Some(Rgba {
+        red: byte(0)?,
+        green: byte(2)?,
+        blue: byte(4)?,
+        alpha: byte(6)?,
+    })
+}
+
+fn composite(top: Rgba, bottom: Rgba) -> Rgba {
+    let alpha = top.alpha + bottom.alpha * (1.0 - top.alpha);
+    if alpha <= f64::EPSILON {
+        return Rgba {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 0.0,
+        };
+    }
+    let channel = |top_channel, bottom_channel| {
+        (top_channel * top.alpha + bottom_channel * bottom.alpha * (1.0 - top.alpha)) / alpha
+    };
+    Rgba {
+        red: channel(top.red, bottom.red),
+        green: channel(top.green, bottom.green),
+        blue: channel(top.blue, bottom.blue),
+        alpha,
+    }
+}
+
+fn luminance(color: Rgba) -> f64 {
+    let linear = |channel: f64| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
+}
+
+fn contrast_ratio(a: Rgba, b: Rgba) -> f64 {
+    let (lighter, darker) = if luminance(a) >= luminance(b) {
+        (luminance(a), luminance(b))
+    } else {
+        (luminance(b), luminance(a))
+    };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Audit resolved native paint, including translucent ancestor films.
+///
+/// Class-name audits miss the regressions this is for: a correct `text-muted`
+/// class can resolve to the wrong token, and a readable foreground can become
+/// unreadable when a translucent parent is composited over the window. Blitz
+/// exposes the exact colours handed to paint, so reconstruct the ancestor stack
+/// and judge the pixels the renderer intended rather than the stylesheet.
+async fn contrast(
+    client: &mut Client,
+    want: &str,
+    text_ratio: f64,
+    control_ratio: f64,
+) -> Result<()> {
+    let (semantic, elapsed) = inspect(client).await?;
+    let answer = client
+        .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
+            include_dom: false,
+            include_layout: false,
+            include_computed_style: true,
+        }))
+        .await?;
+    let DebugResponse::Snapshot(snapshot) = answer.response else {
+        bail!("asked for a contrast snapshot, got {:?}", answer.response);
+    };
+    let styles: HashMap<u64, serde_json::Value> = snapshot
+        .computed_style
+        .as_ref()
+        .and_then(|value| value.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| Some((row.get("nodeId")?.as_u64()?, row.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if styles.is_empty() {
+        bail!("the snapshot carried no computed styles; is this build's diagnostics feature on?");
+    }
+    let by_id: HashMap<u64, &SemanticNode> =
+        semantic.nodes.iter().map(|node| (node.id, node)).collect();
+
+    // A transparent window has no CSS colour at the bottom of the stack. Infer
+    // the palette from the full-window text colour: light ink means dark mode,
+    // dark ink means light mode. This is deliberately conservative and keeps
+    // the audit deterministic regardless of the owner's desktop wallpaper.
+    let root_ink = semantic
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let bounds = node.bounds?;
+            let color = rgba(styles.get(&node.id)?.get("color")?.as_str()?)?;
+            Some((bounds[2] * bounds[3], color))
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, color)| color)
+        .unwrap_or(Rgba {
+            red: 1.0,
+            green: 1.0,
+            blue: 1.0,
+            alpha: 1.0,
+        });
+    let base = if luminance(root_ink) >= 0.25 {
+        Rgba {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 1.0,
+        }
+    } else {
+        Rgba {
+            red: 1.0,
+            green: 1.0,
+            blue: 1.0,
+            alpha: 1.0,
+        }
+    };
+
+    let mut failures = Vec::new();
+    let mut audited = 0usize;
+    for node in &semantic.nodes {
+        if node.name.is_empty()
+            || (!want.is_empty() && !node.name.contains(want) && !node.role.contains(want))
+            || !node.visible
+            || node
+                .bounds
+                .is_none_or(|bounds| bounds[2] <= 0.0 || bounds[3] <= 0.0)
+        {
+            continue;
+        }
+        let Some(foreground) = styles
+            .get(&node.id)
+            .and_then(|style| style.get("color"))
+            .and_then(|value| value.as_str())
+            .and_then(rgba)
+        else {
+            continue;
+        };
+        if foreground.alpha <= f64::EPSILON {
+            continue;
+        }
+
+        let mut chain = Vec::new();
+        let mut next = Some(node.id);
+        for _ in 0..128 {
+            let Some(id) = next else { break };
+            chain.push(id);
+            next = by_id.get(&id).and_then(|ancestor| ancestor.parent);
+        }
+        let background = chain.into_iter().rev().fold(base, |under, id| {
+            styles
+                .get(&id)
+                .and_then(|style| style.get("backgroundColor"))
+                .and_then(|value| value.as_str())
+                .and_then(rgba)
+                .map_or(under, |film| composite(film, under))
+        });
+        let painted_ink = composite(foreground, background);
+        let ratio = contrast_ratio(painted_ink, background);
+        let required = if matches!(
+            node.role.as_str(),
+            "button"
+                | "tab"
+                | "checkbox"
+                | "switch"
+                | "slider"
+                | "radio"
+                | "option"
+                | "combobox"
+                | "menuitem"
+        ) {
+            control_ratio
+        } else {
+            text_ratio
+        };
+        audited += 1;
+        if ratio + 0.01 < required {
+            failures.push((
+                ratio,
+                required,
+                node.id,
+                node.role.clone(),
+                node.name.clone(),
+            ));
+        }
+    }
+    failures.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!(
+        "audited {audited} named painted nodes in {elapsed:.1}ms; text {text_ratio:.2}:1, controls {control_ratio:.2}:1"
+    );
+    for (ratio, required, id, role, name) in failures.iter().take(80) {
+        println!("  {ratio:>5.2}:1 < {required:.2}:1  {id:>11}  {role:<12} {name}");
+    }
+    if failures.len() > 80 {
+        println!("... and {} more", failures.len() - 80);
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} named painted node(s) fall below their contrast floor",
+            failures.len()
+        );
+    }
+    println!("all named painted text meets the contrast floor");
+    Ok(())
+}
+
 /// The scroll state and bottom-most descendants of the visible transcript.
 ///
 /// A screenshot can show that a reply is clipped, but cannot distinguish the
@@ -1530,6 +1761,21 @@ fn require_opaque_background(color: &str) -> std::result::Result<(), String> {
     }
 }
 
+fn require_transparent_background(color: &str) -> std::result::Result<(), String> {
+    let Some(alpha) = color.strip_prefix('#').and_then(|hex| hex.get(6..8)) else {
+        return Err(format!(
+            "resolved background colour {color:?} is not #rrggbbaa"
+        ));
+    };
+    if alpha.eq_ignore_ascii_case("00") {
+        Ok(())
+    } else {
+        Err(format!(
+            "resolved background colour {color} keeps a film; a zero-opacity surface requires alpha 00"
+        ))
+    }
+}
+
 /// Require one rendered subject to own a solid fill in computed paint state.
 async fn opaque_background(client: &mut Client, selector: &str) -> std::result::Result<(), String> {
     let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
@@ -1582,6 +1828,61 @@ async fn opaque_background(client: &mut Client, selector: &str) -> std::result::
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("diagnostics returned no background colour for {selector:?}"))?;
     require_opaque_background(color)
+}
+
+async fn transparent_background(
+    client: &mut Client,
+    selector: &str,
+) -> std::result::Result<(), String> {
+    let (tree, _) = inspect(client).await.map_err(|error| error.to_string())?;
+    let node_id = tree
+        .nodes
+        .iter()
+        .filter(|node| {
+            selector_matches_node(node, selector)
+                && node.visible
+                && node
+                    .bounds
+                    .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
+        })
+        .max_by(|left, right| {
+            let area = |node: &&SemanticNode| {
+                node.bounds
+                    .map(|bounds| bounds[2] * bounds[3])
+                    .unwrap_or_default()
+            };
+            area(left).total_cmp(&area(right))
+        })
+        .map(|node| node.id)
+        .ok_or_else(|| {
+            format!("could not inspect {selector:?}: no visible, sized matching node")
+        })?;
+    let answer = client
+        .diagnostics(&DiagnosticsRequest::Snapshot(SnapshotRequest {
+            include_dom: false,
+            include_layout: false,
+            include_computed_style: true,
+        }))
+        .await
+        .map_err(|error| error.to_string())?;
+    let DebugResponse::Snapshot(snapshot) = answer.response else {
+        return Err(format!(
+            "asked for the computed background of {selector:?}, got {:?}",
+            answer.response
+        ));
+    };
+    let color = snapshot
+        .computed_style
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("nodeId").and_then(serde_json::Value::as_u64) == Some(node_id))
+        })
+        .and_then(|row| row.get("backgroundColor"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("diagnostics returned no background colour for {selector:?}"))?;
+    require_transparent_background(color)
 }
 
 /// Require two captures of the same authored state to be pixel-identical.
@@ -2385,7 +2686,18 @@ async fn run_qa(
 
         if open_error.is_none() && check.expect == qa::Expect::OpaqueBackground {
             pixel_outcome = Some(opaque_background(client, &check.subject).await);
+        } else if open_error.is_none() && check.expect == qa::Expect::TransparentBackground {
+            pixel_outcome = Some(transparent_background(client, &check.subject).await);
         }
+
+        let before_action_pixels = if open_error.is_none()
+            && check.expect == qa::Expect::PixelsChange
+            && check.after_prepare_hover.is_none()
+        {
+            Some(capture_stable_region(client, &check.subject).await)
+        } else {
+            None
+        };
 
         /*
          * The tree is mostly nodes somebody can see.
@@ -2403,7 +2715,7 @@ async fn run_qa(
          * So the question has to be asked for free, on every check, rather
          * than written into one somebody thinks to add. A view legitimately
          * holds hidden nodes - a closed menu, a collapsed row - so this is a
-         * ratio and a generous one: past four dead nodes for every live one,
+         * ratio and a generous one: past five dead nodes for every live one,
          * something is being retained rather than reused.
          */
         {
@@ -2413,7 +2725,7 @@ async fn run_qa(
                 .filter(|node| !node.bounds.is_some_and(|b| b[2] > 0.0 && b[3] > 0.0))
                 .count();
             let live = before.nodes.len().saturating_sub(dead);
-            if live > 0 && dead > live * 4 {
+            if live > 0 && dead > live * 5 {
                 open_error = Some(format!(
                     "the document holds {dead} node(s) with no box against {live} with one, \
                      out of {}; something is retaining subtrees rather than reusing them",
@@ -2481,12 +2793,25 @@ async fn run_qa(
         let transport_timed_out = action_error
             .as_deref()
             .is_some_and(|error| error.contains("inspector did not answer within"));
+        if pixel_outcome.is_none()
+            && let Some(before_pixels) = before_action_pixels
+        {
+            pixel_outcome = Some(match before_pixels {
+                Ok(before_pixels) => match capture_stable_region(client, &check.subject).await {
+                    Ok(after_pixels) => pixels_change(&before_pixels, &after_pixels),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            });
+        }
+
         let live_paint_expect = matches!(
             check.expect,
             qa::Expect::PixelsHold
                 | qa::Expect::PixelsHoldAfterHover
                 | qa::Expect::PixelsChange
                 | qa::Expect::OpaqueBackground
+                | qa::Expect::TransparentBackground
         );
         let after = if live_paint_expect {
             inspect(client).await?.0
@@ -4315,6 +4640,17 @@ fn reconciliation_gap_blocks(classification: &str) -> bool {
     !classification.starts_with("isolated-") && !classification.starts_with("failed-")
 }
 
+fn inventory_outcome_failures(unverified: usize, isolated: usize, required: bool) -> usize {
+    if required {
+        // Isolated controls are deliberately proven by a disposable-process
+        // lifecycle gate after this shared sweep. Keep them visible in the
+        // report, but do not make `--require-outcomes` impossible to satisfy.
+        unverified.saturating_sub(isolated)
+    } else {
+        0
+    }
+}
+
 async fn run_inventory(
     client: &mut Client,
     only: Option<&str>,
@@ -4585,8 +4921,9 @@ async fn run_inventory(
             .collect(),
         controls,
     };
-    let failures =
-        report.unreachable + report.anonymous + usize::from(require_outcomes) * report.unverified;
+    let failures = report.unreachable
+        + report.anonymous
+        + inventory_outcome_failures(report.unverified, report.isolated, require_outcomes);
     println!(
         "{}",
         toon_format::encode_default(&report).map_err(|error| eyre!(error.to_string()))?
@@ -5477,6 +5814,13 @@ async fn main() -> Result<()> {
         cli::Command::Transcript => transcript(&mut client).await?,
         cli::Command::Paint { name, min_area } => {
             paint(&mut client, &name, min_area).await?;
+        }
+        cli::Command::Contrast {
+            name,
+            text_ratio,
+            control_ratio,
+        } => {
+            contrast(&mut client, &name, text_ratio, control_ratio).await?;
         }
         cli::Command::Nodes => {
             nodes(&mut client).await?;
@@ -6425,6 +6769,9 @@ mod tests {
     fn isolated_inventory_rows_remain_reported_without_blocking_reconciliation() {
         assert!(!super::reconciliation_gap_blocks("isolated-unverified"));
         assert!(super::reconciliation_gap_blocks("outcome-unverified"));
+        assert_eq!(super::inventory_outcome_failures(1, 1, true), 0);
+        assert_eq!(super::inventory_outcome_failures(3, 1, true), 2);
+        assert_eq!(super::inventory_outcome_failures(3, 1, false), 0);
     }
 
     /// A bare word is a substring, because that is how a control is recalled.

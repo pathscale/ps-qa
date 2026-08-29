@@ -231,6 +231,11 @@ pub enum Expect {
     /// through. The live runner reads the colour Blitz hands to paint and
     /// requires an alpha channel of `ff`.
     OpaqueBackground,
+    /// The subject's resolved background colour has zero alpha.
+    ///
+    /// This is stricter than merely being translucent: an opacity slider at its
+    /// floor must admit the native backdrop completely, not leave a pale film.
+    TransparentBackground,
     /// The exact semantic node's exposed value changed after the action.
     ///
     /// This is the outcome for sliders, switches, and other value-bearing
@@ -869,7 +874,8 @@ pub fn verdict(
         Expect::PixelsHold
         | Expect::PixelsHoldAfterHover
         | Expect::PixelsChange
-        | Expect::OpaqueBackground => {
+        | Expect::OpaqueBackground
+        | Expect::TransparentBackground => {
             return Err("paint expectations must be resolved by the live QA runner".to_owned());
         }
         Expect::PaintsMore => {

@@ -233,6 +233,20 @@ pub enum Command {
         min_area: f64,
     },
 
+    /// Named, painted text whose resolved foreground is too close to the
+    /// background actually stacked beneath it.
+    Contrast {
+        /// Match nodes whose accessible name contains this.
+        #[arg(default_value = "")]
+        name: String,
+        /// Minimum WCAG ratio for prose and labels.
+        #[arg(long, default_value_t = 4.5)]
+        text_ratio: f64,
+        /// Minimum WCAG ratio for interactive control chrome.
+        #[arg(long, default_value_t = 3.0)]
+        control_ratio: f64,
+    },
+
     /// Boxes that stick out of their container, worst first.
     Spill {
         /// Which axis to measure.
