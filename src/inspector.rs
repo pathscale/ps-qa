@@ -6,10 +6,12 @@
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::time::Instant;
 
 use blitz_control_protocol::{
-    AgentControlRequest, DebugDescriptor, DebugProtocolError, DebugResponse, DiagnosticsRequest,
-    decode_response, decode_rpc, encode_agent_request, encode_diagnostics_request, encode_rpc,
+    AgentControlRequest, AgentSnapshot, DebugDescriptor, DebugProtocolError, DebugResponse,
+    DiagnosticsRequest, decode_response, decode_rpc, encode_agent_request,
+    encode_diagnostics_request, encode_rpc,
 };
 use endpoint_libs::libs::ws::mcp_wire::{
     JsonRpcId, JsonRpcMessage, JsonRpcRequest, MCP_PROTOCOL_VERSION,
@@ -291,6 +293,25 @@ impl Client {
                 Ok(Some(Err(error))) => bail!("reading from the inspector failed: {error}"),
             }
         }
+    }
+}
+
+/// Read the application's semantic tree and report the inspector round-trip.
+///
+/// Most commands need this exact request. Keeping it beside the transport
+/// prevents every command module from rebuilding the protocol exchange.
+pub async fn inspect(client: &mut Client) -> Result<(AgentSnapshot, f64)> {
+    let started = Instant::now();
+    let answer = client
+        .agent(&AgentControlRequest::Inspect {
+            root: None,
+            max_depth: 40,
+        })
+        .await?;
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    match answer.response {
+        DebugResponse::AgentSnapshot(snapshot) => Ok((snapshot, elapsed)),
+        other => bail!("asked for a semantic snapshot, got {other:?}"),
     }
 }
 

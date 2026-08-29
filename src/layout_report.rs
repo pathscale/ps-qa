@@ -40,6 +40,7 @@ pub async fn layout(client: &mut Client, want: &str) -> Result<()> {
             include_dom: true,
             include_layout: true,
             include_computed_style: false,
+            node_ids: Vec::new(),
         }))
         .await?;
     let DebugResponse::Snapshot(snapshot) = answer.response else {

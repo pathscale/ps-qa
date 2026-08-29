@@ -389,6 +389,25 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
     };
 
     /*
+     * Prefer the semantic pane boundary: the child subtree directly beneath
+     * `main`. Retained application panes are siblings there, so this includes
+     * the complete active surface without swallowing Home, Settings, and
+     * documents together. It also works when the active pane owns every
+     * currently visible button, a case where the coverage heuristic below
+     * mistakes the pane itself for the shared window root.
+     */
+    let mut cursor = anchor.id;
+    for _ in 0..nodes.len() {
+        let Some(parent) = by_id.get(&cursor).and_then(|node| node.parent) else {
+            break;
+        };
+        if by_id.get(&parent).is_some_and(|node| node.role == "main") {
+            return subtree_of(cursor);
+        }
+        cursor = parent;
+    }
+
+    /*
      * The ancestor holding the most on-screen controls, chosen over the whole
      * climb rather than at the first one to clear a threshold.
      *
@@ -405,7 +424,11 @@ pub fn on_surface_subtree(nodes: &[SemanticNode], surface: &Surface) -> Vec<u64>
     let mut cursor = anchor.id;
     let mut best: Vec<u64> = Vec::new();
     let mut best_covered = 0usize;
-    for _ in 0..12 {
+    // A component tree can legitimately put the marker dozens of wrappers
+    // below its pane. Bound the climb by the tree itself, not by a guessed
+    // framework depth; parent links strictly move upward and the root break
+    // below prevents the shared window subtree from being selected.
+    for _ in 0..nodes.len() {
         let Some(parent) = by_id.get(&cursor).and_then(|n| n.parent) else {
             break;
         };
@@ -790,6 +813,7 @@ mod tests {
 
     fn node(id: u64, role: &str, name: &str, bounds: Option<[f64; 4]>) -> SemanticNode {
         SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: role.to_owned(),
@@ -828,6 +852,64 @@ mod tests {
         button.parent = Some(3);
 
         assert_eq!(reveal_chain(&[root, panel, list, button], 4), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn surface_scope_reaches_a_pane_deeper_than_twelve_wrappers() {
+        let mut nodes = vec![node(1, "main", "window", Some([0.0, 0.0, 800.0, 600.0]))];
+
+        let mut pane = node(2, "generic", "", Some([0.0, 0.0, 600.0, 600.0]));
+        pane.parent = Some(1);
+        nodes.push(pane);
+
+        let mut parent = 2;
+        for id in 3..18 {
+            let mut wrapper = node(id, "generic", "", Some([0.0, 0.0, 600.0, 600.0]));
+            wrapper.parent = Some(parent);
+            nodes.push(wrapper);
+            parent = id;
+        }
+        let mut marker = node(
+            18,
+            "button",
+            "Surface marker",
+            Some([20.0, 20.0, 100.0, 24.0]),
+        );
+        marker.parent = Some(parent);
+        nodes.push(marker);
+
+        let mut owned = node(
+            19,
+            "button",
+            "Owned action",
+            Some([20.0, 60.0, 100.0, 24.0]),
+        );
+        owned.parent = Some(2);
+        nodes.push(owned);
+
+        let mut other_pane = node(20, "generic", "", Some([600.0, 0.0, 200.0, 600.0]));
+        other_pane.parent = Some(1);
+        nodes.push(other_pane);
+        let mut foreign = node(
+            21,
+            "button",
+            "Foreign action",
+            Some([620.0, 20.0, 100.0, 24.0]),
+        );
+        foreign.parent = Some(20);
+        nodes.push(foreign);
+
+        let surface = Surface {
+            name: "deep".to_owned(),
+            opener: "Deep".to_owned(),
+            marker: Some("Surface marker".to_owned()),
+            reveal_with: None,
+        };
+        let scope = on_surface_subtree(&nodes, &surface);
+
+        assert!(scope.contains(&18));
+        assert!(scope.contains(&19));
+        assert!(!scope.contains(&21));
     }
 
     #[test]

@@ -325,13 +325,16 @@ pub enum Command {
     /// every other reading here comes from the tree, where the two are
     /// identical.
     Capture {
-        /// Match the node whose accessible name contains this. Empty captures
-        /// the window.
+        /// Match the node by accessible name, role:name, #id or @data-slot.
+        /// Empty captures the window.
         #[arg(default_value = "")]
         name: String,
         /// Render scale.
         #[arg(default_value_t = 1.0)]
         scale: f64,
+        /// Save the rendered pixels as a binary PPM image for visual diagnosis.
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
     },
 
     /// Move, press and release a real pointer over the first match, which is

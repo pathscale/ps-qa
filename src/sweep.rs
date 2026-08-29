@@ -348,6 +348,7 @@ mod tests {
 
     fn button(name: &str) -> SemanticNode {
         SemanticNode {
+            dom_id: None,
             id: 0,
             parent: None,
             role: "button".to_owned(),

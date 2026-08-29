@@ -202,6 +202,11 @@ pub enum Expect {
     /// This is a rendered-order assertion, not DOM order. It verifies list
     /// placement using the boxes a person actually sees.
     Above,
+    /// The named subject paints entirely to the right of the comparison box.
+    ///
+    /// This guards desktop compositions whose controls must sit beside a
+    /// primary visual rather than falling into the narrow/mobile stack.
+    RightOf,
     /// The rendered pixels stay identical across the declared pointer abuse.
     ///
     /// This is deliberately a frame assertion rather than a DOM-count
@@ -236,6 +241,12 @@ pub enum Expect {
     /// This is stricter than merely being translucent: an opacity slider at its
     /// floor must admit the native backdrop completely, not leave a pale film.
     TransparentBackground,
+    /// The subject's resolved font size increases after the action.
+    ///
+    /// This verifies interface scaling against the computed style Blitz hands
+    /// to layout. Enlarging one control box is not enough: fixed-size text can
+    /// remain unreadably small inside it while a geometry-only check passes.
+    FontSizeGrows,
     /// The exact semantic node's exposed value changed after the action.
     ///
     /// This is the outcome for sliders, switches, and other value-bearing
@@ -356,6 +367,17 @@ pub struct Check {
     /// click, and it lets the app mount the subject before its first hover.
     #[serde(default)]
     pub reveal_before_capture: Option<String>,
+    /// Focus this field and enter [`setup_text`](Self::setup_text) after
+    /// navigation, before preparation and the measured action.
+    ///
+    /// This makes multi-step checks independent of state left by earlier
+    /// checks. A filtered list can establish its query here, then click a row
+    /// action and measure the editor outcome with `type_into`/`key`.
+    #[serde(default)]
+    pub setup_type_into: Option<String>,
+    /// Literal value entered into [`setup_type_into`](Self::setup_type_into).
+    #[serde(default)]
+    pub setup_text: Option<String>,
     /// Click this node, if the check is about an action.
     pub click: Option<String>,
     /// Focus this named text field and enter [`text`](Self::text).
@@ -506,6 +528,14 @@ fn validate_check(
             file.display(),
             check.id,
             check.subject
+        ));
+    }
+
+    if check.setup_type_into.is_some() != check.setup_text.is_some() {
+        return Err(format!(
+            "{}: check {:?} must declare setup_type_into and setup_text together",
+            file.display(),
+            check.id
         ));
     }
 
@@ -871,11 +901,36 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::RightOf => {
+            let compare = check
+                .compare
+                .as_deref()
+                .ok_or_else(|| "RightOf requires compare".to_owned())?;
+            let subject_node = found
+                .iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| format!("no painted node matching {:?}", check.subject))?;
+            let subject = subject_node.bounds.expect("painted nodes have bounds");
+            let other = matching(after, compare)
+                .into_iter()
+                .filter(|node| node.id != subject_node.id)
+                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .ok_or_else(|| format!("no painted comparison node matching {compare:?}"))?;
+            const SLACK: f64 = 1.0;
+            let other_right = other[0] + other[2];
+            if subject[0] < other_right - SLACK {
+                return Err(format!(
+                    "{:?} starts at x={:.0}, not right of {compare:?} ending at x={other_right:.0}",
+                    check.subject, subject[0]
+                ));
+            }
+        }
         Expect::PixelsHold
         | Expect::PixelsHoldAfterHover
         | Expect::PixelsChange
         | Expect::OpaqueBackground
-        | Expect::TransparentBackground => {
+        | Expect::TransparentBackground
+        | Expect::FontSizeGrows => {
             return Err("paint expectations must be resolved by the live QA runner".to_owned());
         }
         Expect::PaintsMore => {
@@ -1096,6 +1151,12 @@ fn action_description(check: &Check) -> String {
         };
         action = format!("{preparation}, {action}");
     }
+    if let (Some(field), Some(value)) = (
+        check.setup_type_into.as_deref(),
+        check.setup_text.as_deref(),
+    ) {
+        action = format!("setup {value:?} in {field:?}, {action}");
+    }
     if let Some(field) = check.type_into.as_deref() {
         let typed = check.text.as_deref().map_or_else(
             || format!("focus {field:?}"),
@@ -1250,6 +1311,25 @@ mod tests {
     }
 
     #[test]
+    fn checks_can_establish_typed_state_before_the_measured_action() {
+        let check = parse("setup_type_into:Some(\"Search projects\"),setup_text:Some(\"theta\"),");
+        assert_eq!(
+            action_description(&check),
+            "setup \"theta\" in \"Search projects\", activate \"Save\""
+        );
+        validate_check(&check, Path::new("search.ron"), &mut HashMap::new())
+            .expect("paired setup input is valid");
+    }
+
+    #[test]
+    fn typed_setup_requires_both_the_field_and_value() {
+        let check = parse("setup_type_into:Some(\"Search projects\"),");
+        let error = validate_check(&check, Path::new("search.ron"), &mut HashMap::new())
+            .expect_err("an incomplete setup must fail validation");
+        assert!(error.contains("setup_type_into and setup_text together"));
+    }
+
+    #[test]
     fn checks_can_describe_literal_semantic_input() {
         let check = parse(
             "type_into:Some(\"New record\"),text:Some(\"latest fixture\"),\
@@ -1283,6 +1363,8 @@ mod tests {
             hover_unless: None,
             after_prepare_hover: None,
             reveal_before_capture: None,
+            setup_type_into: None,
+            setup_text: None,
             click: None,
             type_into: None,
             text: None,
@@ -1299,6 +1381,7 @@ mod tests {
             expect: Expect::ValueChanges,
         };
         let node = |id, value: &str| SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: "slider".into(),
@@ -1331,6 +1414,7 @@ mod tests {
     #[test]
     fn a_virtualized_family_can_advance_without_growing() {
         let node = |id, name: &str| SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: "button".into(),
@@ -1371,6 +1455,7 @@ mod tests {
     #[test]
     fn a_selection_check_follows_the_same_node_id() {
         let before = SemanticNode {
+            dom_id: None,
             id: 7,
             parent: None,
             role: "radio".into(),
@@ -1405,6 +1490,7 @@ mod tests {
     #[test]
     fn a_name_check_follows_the_same_node_id() {
         let node = |id, name: &str| SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: "status".into(),
@@ -1436,6 +1522,7 @@ mod tests {
         check.subject = "textbox:Rename project".into();
         check.expect = Expect::PaintsNamed;
         let node = |id, role: &str, bounds: Option<[f64; 4]>| SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: role.into(),
@@ -1465,6 +1552,7 @@ mod tests {
         check.subject = "radio:Theme color".into();
         check.expect = Expect::DistinctPositions;
         let node = |id, x, y| SemanticNode {
+            dom_id: None,
             id,
             parent: None,
             role: "radio".into(),
@@ -1489,6 +1577,7 @@ mod tests {
         check.subject = "radio:Theme color".into();
         check.expect = Expect::ContainedBy;
         let child = |id, x, y| SemanticNode {
+            dom_id: None,
             id,
             parent: Some(1),
             role: "radio".into(),
@@ -1501,6 +1590,7 @@ mod tests {
             slot: None,
         };
         let container = SemanticNode {
+            dom_id: None,
             id: 1,
             parent: None,
             role: "group".into(),
@@ -1540,6 +1630,7 @@ mod tests {
         check.subject = "Save".into();
         check.expect = Expect::Enabled;
         let node = |enabled, bounds| SemanticNode {
+            dom_id: None,
             id: 7,
             parent: None,
             role: "button".into(),
@@ -1568,6 +1659,7 @@ mod tests {
         check.subject = "button:Send".into();
         check.expect = Expect::Disabled;
         let node = |role: &str| SemanticNode {
+            dom_id: None,
             id: 7,
             parent: None,
             role: role.into(),
