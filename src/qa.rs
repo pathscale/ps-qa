@@ -209,6 +209,13 @@ pub enum Expect {
     /// This guards desktop compositions whose controls must sit beside a
     /// primary visual rather than falling into the narrow/mobile stack.
     RightOf,
+    /// The subject and comparison boxes share the same vertical center.
+    ///
+    /// `RightOf` catches a desktop composition collapsing into a stack, but it
+    /// still passes when the primary visual is pinned to the top of a much
+    /// taller controls column. This assertion guards the authored balance of
+    /// the two side-by-side regions.
+    CenterAlignedY,
     /// The rendered pixels stay identical across the declared pointer abuse.
     ///
     /// This is deliberately a frame assertion rather than a DOM-count
@@ -971,6 +978,31 @@ pub fn verdict(
                 ));
             }
         }
+        Expect::CenterAlignedY => {
+            let compare = check
+                .compare
+                .as_deref()
+                .ok_or_else(|| "CenterAlignedY requires compare".to_owned())?;
+            let subject_node = found
+                .iter()
+                .find(|node| paints(node))
+                .ok_or_else(|| format!("no painted node matching {:?}", check.subject))?;
+            let subject = subject_node.bounds.expect("painted nodes have bounds");
+            let other = matching(after, compare)
+                .into_iter()
+                .filter(|node| node.id != subject_node.id)
+                .find_map(|node| paints(node).then_some(node.bounds).flatten())
+                .ok_or_else(|| format!("no painted comparison node matching {compare:?}"))?;
+            let subject_center = subject[1] + subject[3] / 2.0;
+            let other_center = other[1] + other[3] / 2.0;
+            const SLACK: f64 = 2.0;
+            if (subject_center - other_center).abs() > SLACK {
+                return Err(format!(
+                    "{:?} is centered at y={subject_center:.0}, not aligned with {compare:?} at y={other_center:.0}",
+                    check.subject
+                ));
+            }
+        }
         Expect::PixelsHold
         | Expect::PixelsHoldAfterHover
         | Expect::PixelsChange
@@ -1718,6 +1750,35 @@ mod tests {
         )
         .expect_err("a detached petal must fail containment");
         assert!(error.contains("escapes \"group:Surface colour\""));
+    }
+
+    #[test]
+    fn vertical_center_alignment_compares_rendered_boxes() {
+        let mut check = parse("compare:Some(\"@adjustments\"),");
+        check.subject = "@color-wheel-flower".into();
+        check.expect = Expect::CenterAlignedY;
+        let node = |id, slot: &str, bounds| SemanticNode {
+            dom_id: None,
+            id,
+            parent: None,
+            role: "generic".into(),
+            name: String::new(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some(bounds),
+            slot: Some(slot.into()),
+        };
+
+        let wheel = node(1, "color-wheel-flower", [10.0, 110.0, 190.0, 190.0]);
+        let aligned = node(2, "adjustments", [220.0, 20.0, 400.0, 370.0]);
+        assert!(verdict(&check, &[], &[wheel.clone(), aligned]).is_ok());
+
+        let pinned_to_top = node(2, "adjustments", [220.0, 110.0, 400.0, 370.0]);
+        let error = verdict(&check, &[], &[wheel, pinned_to_top])
+            .expect_err("top-pinned wheel must fail vertical centering");
+        assert!(error.contains("not aligned"));
     }
 
     #[test]
