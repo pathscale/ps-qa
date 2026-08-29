@@ -1194,7 +1194,7 @@ async fn run_qa(
 
         let mut nodes_after_first_hover = None;
 
-        client.set_request_timeout(check_timeout(900));
+        client.set_request_timeout(check_timeout(check.outcome_timeout_ms.max(900)));
 
         // Hover first: the row actions do not exist until `pointerenter`.
         //
@@ -1689,19 +1689,47 @@ async fn run_qa(
                 | qa::Expect::Contrast
                 | qa::Expect::FontSizeGrows
         );
+        let fallback_after = || AgentSnapshot {
+            nodes: before.nodes.clone(),
+            ..AgentSnapshot::default()
+        };
         let (after, settle_error, settle_iterations) = if live_paint_expect {
-            (inspect(client).await?.0, None, 0)
+            match inspect(client).await {
+                Ok((snapshot, _)) => (snapshot, None, 0),
+                Err(error) => (
+                    fallback_after(),
+                    Some(format!("could not inspect after the action: {error}")),
+                    0,
+                ),
+            }
         } else if action_error.is_none() || transport_timed_out {
-            settle_for_outcome(
+            match settle_for_outcome(
                 client,
                 check,
                 &before.nodes,
                 action_target.as_deref(),
                 action_node_id,
             )
-            .await?
+            .await
+            {
+                Ok(settled) => settled,
+                Err(error) => (
+                    fallback_after(),
+                    Some(format!("could not inspect the rendered outcome: {error}")),
+                    0,
+                ),
+            }
         } else {
-            (inspect(client).await?.0, None, 0)
+            match inspect(client).await {
+                Ok((snapshot, _)) => (snapshot, None, 0),
+                Err(error) => (
+                    fallback_after(),
+                    Some(format!(
+                        "could not inspect after the failed action: {error}"
+                    )),
+                    0,
+                ),
+            }
         };
         let mut outcome = if live_paint_expect {
             match action_error {

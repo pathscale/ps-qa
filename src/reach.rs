@@ -301,6 +301,27 @@ fn doubled(name: &str) -> Option<&str> {
 /// somewhere else" - without a route or a title to read, neither of which the
 /// semantic tree exposes.
 pub fn on_surface(nodes: &[SemanticNode], surface: &Surface) -> bool {
+    on_surface_for_profile(nodes, surface, profile())
+}
+
+fn on_surface_for_profile(
+    nodes: &[SemanticNode],
+    surface: &Surface,
+    profile: &crate::app::AppProfile,
+) -> bool {
+    if profile.is_permanent(&surface.opener) {
+        let doubled = format!("{}{}", surface.opener, surface.opener);
+        let selected = nodes.iter().any(|node| {
+            node.role.eq_ignore_ascii_case("button")
+                && node.selected
+                && onscreen(node)
+                && (node.name.eq_ignore_ascii_case(&surface.opener)
+                    || node.name.eq_ignore_ascii_case(&doubled))
+        });
+        if !selected {
+            return false;
+        }
+    }
     let Some(marker) = surface.marker.as_deref() else {
         return true;
     };
@@ -838,6 +859,51 @@ mod tests {
             "Row action",
             Some([10.0, 10.0, 20.0, 20.0])
         )));
+    }
+
+    #[test]
+    fn a_retained_marker_does_not_make_an_unselected_permanent_surface_current() {
+        let surface = Surface {
+            name: "settings".into(),
+            opener: "Settings".into(),
+            marker: Some("Search settings".into()),
+            reveal_with: None,
+        };
+        let profile = crate::app::AppProfile {
+            permanent_surfaces: vec!["Settings".into(), "Analytics".into()],
+            ..Default::default()
+        };
+        let mut settings_tab = node(
+            1,
+            "button",
+            "SettingsSettings",
+            Some([0.0, 0.0, 100.0, 30.0]),
+        );
+        let marker = node(
+            2,
+            "textbox",
+            "Search settings",
+            Some([0.0, 50.0, 200.0, 30.0]),
+        );
+        let mut analytics_tab = node(
+            3,
+            "button",
+            "AnalyticsAnalytics",
+            Some([100.0, 0.0, 100.0, 30.0]),
+        );
+        analytics_tab.selected = true;
+
+        assert!(!on_surface_for_profile(
+            &[settings_tab.clone(), marker.clone(), analytics_tab],
+            &surface,
+            &profile,
+        ));
+        settings_tab.selected = true;
+        assert!(on_surface_for_profile(
+            &[settings_tab, marker],
+            &surface,
+            &profile,
+        ));
     }
 
     #[test]
