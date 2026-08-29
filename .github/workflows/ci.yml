@@ -58,7 +58,7 @@ jobs:
           cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test
 
       # The loader reads an application's checks, and this repository has none:
       # they belong to the application under test. So the guard is that a
@@ -108,10 +108,10 @@ jobs:
       # The host is a separate crate on purpose: it links blitz, and this one
       # must not, so that driving a control never builds a browser engine.
       #
-      # Pinned, because an unpinned install took 0.1.0, which predates the
-      # Hover support a repeated-hover check depends on.
+      # Install the current host and let the end-to-end sweep prove that its
+      # protocol and behavior remain compatible with this driver.
       - name: Install the inspection host
-        run: cargo install qa-inspect-host --version '^0.1.1' --locked
+        run: cargo install qa-inspect-host
 
       - name: Build
         run: cargo build --release
