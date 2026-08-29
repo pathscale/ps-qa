@@ -43,7 +43,7 @@ pub(crate) async fn hover_over(client: &mut Client, want: &str) -> Result<bool> 
     let Some(node) = snapshot
         .nodes
         .iter()
-        .filter(|node| node.visible && node.name.contains(want))
+        .filter(|node| node.visible && selector_matches_node(node, want))
         .filter_map(|node| node.bounds.map(|bounds| (node, bounds)))
         .max_by(|a, b| {
             (a.1[2] * a.1[3])
@@ -95,6 +95,17 @@ pub(crate) async fn scroll(client: &mut Client, ticks: usize, delta: f64) -> Res
         );
     }
 
+    let mut latencies = scroll_events(client, ticks, delta).await?;
+    report::show_latencies("wheel events", ticks, &mut latencies);
+    Ok(())
+}
+
+/** Send wheel input without the benchmark report, for declarative QA actions. */
+pub(crate) async fn scroll_events(
+    client: &mut Client,
+    ticks: usize,
+    delta: f64,
+) -> Result<Vec<f64>> {
     let mut latencies = Vec::with_capacity(ticks);
     for _ in 0..ticks {
         let started = Instant::now();
@@ -111,8 +122,7 @@ pub(crate) async fn scroll(client: &mut Client, ticks: usize, delta: f64) -> Res
         latencies.push(started.elapsed().as_secs_f64() * 1000.0);
         sleep_pace().await;
     }
-    report::show_latencies("wheel events", ticks, &mut latencies);
-    Ok(())
+    Ok(latencies)
 }
 
 /// The painted textbox whose semantic name mentions `want` on the active layer.

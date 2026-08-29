@@ -187,16 +187,56 @@ pub(crate) async fn contrast(
             chain.push(id);
             next = by_id.get(&id).and_then(|ancestor| ancestor.parent);
         }
-        let background = chain.into_iter().rev().fold(base, |under, id| {
+        // First resolve what sits beneath this node. A control's own fill is
+        // its visible chrome, not the surface that chrome must contrast with.
+        // Including the node in this fold made every opaque thumb and swatch
+        // compare inherited text `color` against its own fill instead.
+        let under = chain.iter().skip(1).rev().fold(base, |under, id| {
             styles
-                .get(&id)
+                .get(id)
                 .and_then(|style| style.get("backgroundColor"))
                 .and_then(|value| value.as_str())
                 .and_then(parse)
                 .map_or(under, |film| composite(film, under))
         });
-        let ratio = contrast_ratio(composite(foreground, background), background);
-        let required = if is_control(&node.role) {
+        let own_background = styles
+            .get(&node.id)
+            .and_then(|style| style.get("backgroundColor"))
+            .and_then(|value| value.as_str())
+            .and_then(parse);
+        let border = styles.get(&node.id).and_then(|style| {
+            let width = style
+                .get("borderWidth")?
+                .as_str()?
+                .strip_suffix("px")?
+                .parse::<f64>()
+                .ok()?;
+            (width > 0.0)
+                .then(|| style.get("borderColor")?.as_str())
+                .flatten()
+                .and_then(parse)
+                .filter(|color| color.alpha > f64::EPSILON)
+        });
+        let background = own_background.map_or(under, |film| composite(film, under));
+        let has_text_content = styles
+            .get(&node.id)
+            .and_then(|style| style.get("hasTextContent"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let form_chrome = is_graphical_control(&node.role);
+        let graphical_control = uses_graphical_contrast(&node.role, has_text_content);
+        let (ink, substrate) = if form_chrome && let Some(border) = border {
+            (border, under)
+        } else if form_chrome
+            && let Some(fill) = own_background
+            && fill.alpha > f64::EPSILON
+        {
+            (fill, under)
+        } else {
+            (foreground, background)
+        };
+        let ratio = contrast_ratio(composite(ink, substrate), substrate);
+        let required = if graphical_control {
             control_ratio
         } else {
             text_ratio
@@ -217,6 +257,9 @@ pub(crate) async fn contrast(
     println!(
         "audited {audited} named painted nodes in {elapsed:.1}ms; text {text_ratio:.2}:1, controls {control_ratio:.2}:1"
     );
+    if audited == 0 {
+        bail!("no visible painted node matched {want:?}");
+    }
     for (ratio, required, id, role, name) in failures.iter().take(80) {
         println!("  {ratio:>5.2}:1 < {required:.2}:1  {id:>11}  {role:<12} {name}");
     }
@@ -246,6 +289,7 @@ fn computed_styles(value: Option<&serde_json::Value>) -> HashMap<u64, serde_json
 
 fn auditable(node: &SemanticNode, want: &str) -> bool {
     !node.name.is_empty()
+        && (node.enabled || !is_interactive(&node.role))
         && (want.is_empty() || node.name.contains(want) || node.role.contains(want))
         && node.visible
         && node
@@ -253,7 +297,7 @@ fn auditable(node: &SemanticNode, want: &str) -> bool {
             .is_some_and(|bounds| bounds[2] > 0.0 && bounds[3] > 0.0)
 }
 
-fn is_control(role: &str) -> bool {
+fn is_interactive(role: &str) -> bool {
     matches!(
         role,
         "button"
@@ -265,17 +309,53 @@ fn is_control(role: &str) -> bool {
             | "option"
             | "combobox"
             | "menuitem"
+            | "textbox"
     )
+}
+
+fn is_graphical_control(role: &str) -> bool {
+    matches!(role, "checkbox" | "switch" | "slider" | "radio")
+}
+
+fn uses_graphical_contrast(role: &str, has_text_content: bool) -> bool {
+    is_graphical_control(role)
+        || (!has_text_content && matches!(role, "button" | "tab" | "link" | "menuitem"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_control;
+    use super::{auditable, is_graphical_control, uses_graphical_contrast};
+    use blitz_control_protocol::SemanticNode;
 
     #[test]
-    fn interactive_roles_use_the_control_floor() {
-        assert!(is_control("button"));
-        assert!(is_control("menuitem"));
-        assert!(!is_control("paragraph"));
+    fn only_non_text_form_chrome_uses_the_graphical_control_floor() {
+        assert!(is_graphical_control("slider"));
+        assert!(is_graphical_control("radio"));
+        assert!(!is_graphical_control("button"));
+        assert!(!is_graphical_control("combobox"));
+    }
+
+    #[test]
+    fn icon_only_buttons_use_graphical_contrast_but_text_buttons_do_not() {
+        assert!(uses_graphical_contrast("button", false));
+        assert!(!uses_graphical_contrast("button", true));
+    }
+
+    #[test]
+    fn inactive_controls_are_exempt_from_contrast_auditing() {
+        let disabled = SemanticNode {
+            dom_id: Some("prompt".into()),
+            id: 1,
+            parent: None,
+            role: "textbox".into(),
+            name: "Task manager prompt".into(),
+            value: None,
+            enabled: false,
+            visible: true,
+            selected: false,
+            bounds: Some([0.0, 0.0, 200.0, 24.0]),
+            slot: None,
+        };
+        assert!(!auditable(&disabled, ""));
     }
 }

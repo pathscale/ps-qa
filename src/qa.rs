@@ -134,6 +134,8 @@ pub enum Expect {
     FamilyChanges,
     /// The count of matching nodes did not change.
     Holds,
+    /// The count of matching nodes equals [`Check::expect_count`].
+    Count,
     /// A node matching *both* a name and a role paints.
     ///
     /// The precise form of [`Paints`](Expect::Paints), for the common case
@@ -241,6 +243,12 @@ pub enum Expect {
     /// This is stricter than merely being translucent: an opacity slider at its
     /// floor must admit the native backdrop completely, not leave a pale film.
     TransparentBackground,
+    /// Every named painted node matching the subject meets its contrast floor.
+    ///
+    /// Text and labeled controls use 4.5:1. Graphical form chrome and
+    /// icon-only actions use 3:1, sampled from the paint property that actually
+    /// identifies them (foreground, border, or fill).
+    Contrast,
     /// The subject's resolved font size increases after the action.
     ///
     /// This verifies interface scaling against the computed style Blitz hands
@@ -392,6 +400,15 @@ pub struct Check {
     /// Unlike `type_into`, this accepts any value-bearing role, including a
     /// slider. Name resolution produces a node id before the action is sent.
     pub key_on: Option<String>,
+    /// Move over this semantic node and send real wheel input after other actions.
+    #[serde(default)]
+    pub scroll_over: Option<String>,
+    /// Number of wheel events for [`scroll_over`](Self::scroll_over).
+    #[serde(default)]
+    pub scroll_ticks: usize,
+    /// Vertical pixels per wheel event. Negative scrolls down.
+    #[serde(default)]
+    pub scroll_delta: f64,
     /// The second named node for a relative-position expectation.
     pub compare: Option<String>,
     /// Target size for [`Measures`](Expect::Measures), as `WxH`.
@@ -401,6 +418,9 @@ pub struct Check {
     /// content-driven.
     #[serde(default)]
     pub expect_size: Option<String>,
+    /// Exact family size for [`Expect::Count`].
+    #[serde(default)]
+    pub expect_count: Option<usize>,
     /// Additional controls covered by this same rendered contract.
     ///
     /// Use this only for a repeated family produced from one component and
@@ -429,6 +449,16 @@ pub struct Check {
     /// weakening every button in the sweep.
     #[serde(default)]
     pub outcome_timeout_ms: u64,
+    /// Require the successful rendered outcome to remain present while the
+    /// complete live semantic snapshot stays unchanged for this long.
+    ///
+    /// Navigation can expose a heading in its first partial frame and mount
+    /// the rest of the page afterward. A name-only outcome then measures tab
+    /// activation rather than a usable page. This window is part of outcome
+    /// latency: every later tree change restarts it, so staged content cannot
+    /// be reported as a fast completed render.
+    #[serde(default)]
+    pub stable_for_ms: u64,
     /// Run this check only after every ordinary shared-instance outcome.
     ///
     /// A destructive sequence may deliberately remove fixture state that
@@ -536,6 +566,22 @@ fn validate_check(
             "{}: check {:?} must declare setup_type_into and setup_text together",
             file.display(),
             check.id
+        ));
+    }
+
+    if check.scroll_over.is_some() && (check.scroll_ticks == 0 || check.scroll_delta == 0.0) {
+        return Err(format!(
+            "{}: check {:?} must declare non-zero scroll_ticks and scroll_delta with scroll_over",
+            file.display(),
+            check.id,
+        ));
+    }
+
+    if check.expect == Expect::Count && check.expect_count.is_none() {
+        return Err(format!(
+            "{}: check {:?} must declare expect_count with Count",
+            file.display(),
+            check.id,
         ));
     }
 
@@ -930,6 +976,7 @@ pub fn verdict(
         | Expect::PixelsChange
         | Expect::OpaqueBackground
         | Expect::TransparentBackground
+        | Expect::Contrast
         | Expect::FontSizeGrows => {
             return Err("paint expectations must be resolved by the live QA runner".to_owned());
         }
@@ -987,6 +1034,18 @@ pub fn verdict(
                 return Err(format!(
                     "{:?} went {was} -> {now}, expected no change",
                     check.subject
+                ));
+            }
+        }
+        Expect::Count => {
+            let want = check
+                .expect_count
+                .ok_or_else(|| "Count requires expect_count".to_owned())?;
+            if found.len() != want {
+                return Err(format!(
+                    "{:?} has {} member(s), expected {want}",
+                    check.subject,
+                    found.len()
                 ));
             }
         }
@@ -1174,6 +1233,12 @@ fn action_description(check: &Check) -> String {
     ) {
         action.push_str(&format!(", key {key:?} on {target:?}"));
     }
+    if let Some(target) = check.scroll_over.as_deref() {
+        action.push_str(&format!(
+            ", scroll {} x {:.0} over {target:?}",
+            check.scroll_ticks, check.scroll_delta
+        ));
+    }
     action
 }
 
@@ -1342,10 +1407,36 @@ mod tests {
         assert_eq!(check.compare.as_deref(), Some("older"));
         assert_eq!(check.covers, ["button:Save row "]);
         assert_eq!(check.settle_after_ms, 1200);
+        assert_eq!(check.stable_for_ms, 0);
         assert_eq!(
             action_description(&check),
             "activate \"Save\", type \"latest fixture\" into \"New record\", key \"Enter\" on \"New record\""
         );
+    }
+
+    #[test]
+    fn checks_can_describe_real_wheel_input() {
+        let check = parse("scroll_over:Some(\"listitem:\"),scroll_ticks:4,scroll_delta:-300.0,");
+        assert_eq!(check.scroll_over.as_deref(), Some("listitem:"));
+        assert_eq!(check.scroll_ticks, 4);
+        assert_eq!(check.scroll_delta, -300.0);
+        assert_eq!(
+            action_description(&check),
+            "activate \"Save\", scroll 4 x -300 over \"listitem:\""
+        );
+    }
+
+    #[test]
+    fn count_checks_require_an_exact_count() {
+        let mut check = parse("");
+        check.expect = Expect::Count;
+        let error = validate_check(&check, Path::new("count.ron"), &mut HashMap::new())
+            .expect_err("Count without an exact value is ambiguous");
+        assert!(error.contains("expect_count"));
+
+        check.expect_count = Some(12);
+        validate_check(&check, Path::new("count.ron"), &mut HashMap::new())
+            .expect("an exact count is valid");
     }
 
     #[test]
@@ -1370,12 +1461,17 @@ mod tests {
             text: None,
             key: Some("Right".into()),
             key_on: Some("Output level".into()),
+            scroll_over: None,
+            scroll_ticks: 0,
+            scroll_delta: 0.0,
             compare: None,
             expect_size: None,
+            expect_count: None,
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
             outcome_timeout_ms: 0,
+            stable_for_ms: 0,
             destructive: false,
             subject: "Output level".into(),
             expect: Expect::ValueChanges,

@@ -15,6 +15,7 @@
 //! the adjacent tagging of `AgentAction` wrong, which presented as a hung app.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use blitz_control_protocol::{
@@ -29,7 +30,9 @@ use crate::computed_style::{
 };
 use crate::diagnostics::{dom, metrics, nodes, panes, spill, transcript};
 use crate::inspector::{Client, inspect};
-use crate::interaction::{click_named, hover_over, press_key, scroll, type_keys, type_text};
+use crate::interaction::{
+    click_named, hover_over, press_key, scroll, scroll_events, type_keys, type_text,
+};
 use crate::layout_report::layout;
 use crate::target::{
     locate_control, name_matches, offscreen, painted_bounds, painted_named, resolved_action_target,
@@ -1360,6 +1363,12 @@ async fn run_qa(
             pixel_outcome = Some(opaque_background(client, &check.subject).await);
         } else if open_error.is_none() && check.expect == qa::Expect::TransparentBackground {
             pixel_outcome = Some(transparent_background(client, &check.subject).await);
+        } else if open_error.is_none() && check.expect == qa::Expect::Contrast {
+            pixel_outcome = Some(
+                paint_audit::contrast(client, &check.subject, 4.5, 3.0)
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
         }
 
         let before_font_size = if open_error.is_none() && check.expect == qa::Expect::FontSizeGrows
@@ -1426,9 +1435,11 @@ async fn run_qa(
                 ));
             }
         }
-        let mut check_started =
-            (check.click.is_none() && check.text.is_none() && check.key.is_none())
-                .then(Instant::now);
+        let mut check_started = (check.click.is_none()
+            && check.text.is_none()
+            && check.key.is_none()
+            && check.scroll_over.is_none())
+        .then(Instant::now);
 
         // Then the action, if this check is about one. A click that cannot be
         // dispatched is itself a failure, not a skip.
@@ -1483,6 +1494,24 @@ async fn run_qa(
                 action_error = Some(format!("could not send {key:?}: {error}"));
             }
         }
+        if action_error.is_none()
+            && let Some(target) = check.scroll_over.as_deref()
+        {
+            check_started = Some(Instant::now());
+            match hover_over(client, target).await {
+                Ok(true) => {
+                    if let Err(error) =
+                        scroll_events(client, check.scroll_ticks, check.scroll_delta).await
+                    {
+                        action_error = Some(format!("could not scroll over {target:?}: {error}"));
+                    }
+                }
+                Ok(false) => action_error = Some(format!("no painted node matching {target:?}")),
+                Err(error) => {
+                    action_error = Some(format!("could not aim at {target:?}: {error}"));
+                }
+            }
+        }
         let transport_timed_out = action_error
             .as_deref()
             .is_some_and(|error| error.contains("inspector did not answer within"));
@@ -1525,10 +1554,11 @@ async fn run_qa(
                 | qa::Expect::PixelsChange
                 | qa::Expect::OpaqueBackground
                 | qa::Expect::TransparentBackground
+                | qa::Expect::Contrast
                 | qa::Expect::FontSizeGrows
         );
-        let after = if live_paint_expect {
-            inspect(client).await?.0
+        let (after, settle_error) = if live_paint_expect {
+            (inspect(client).await?.0, None)
         } else if action_error.is_none() || transport_timed_out {
             settle_for_outcome(
                 client,
@@ -1539,7 +1569,7 @@ async fn run_qa(
             )
             .await?
         } else {
-            inspect(client).await?.0
+            (inspect(client).await?.0, None)
         };
         let mut outcome = if live_paint_expect {
             match action_error {
@@ -1568,6 +1598,12 @@ async fn run_qa(
                 ),
             }
         };
+        if let Some(error) = settle_error {
+            outcome = Err(match outcome {
+                Ok(()) => error,
+                Err(existing) => format!("{existing}; {error}"),
+            });
+        }
         // Preparation is not the outcome latency. Opening an editor, hovering
         // its row, and filling a field establish the precondition; the final
         // click, value commit, or key is the user action whose rendered result
@@ -1678,16 +1714,71 @@ fn outcome_verdict(
         targeted.expect = qa::Expect::Paints;
         qa::verdict(&targeted, before, after)
     } else if check.expect == qa::Expect::ValueChanges
+        && action_target.is_some_and(|target| target == check.subject)
         && let Some(node_id) = action_node_id
     {
         qa::value_changed(node_id, before, after)
     } else if check.expect == qa::Expect::SelectionChanges
+        && action_target.is_some_and(|target| target == check.subject)
         && let Some(node_id) = action_node_id
     {
         qa::selection_changed(node_id, before, after)
     } else {
         qa::verdict(check, before, after)
     }
+}
+
+#[derive(Default)]
+struct OutcomeStability {
+    fingerprint: Option<u64>,
+    since: Option<tokio::time::Instant>,
+}
+
+impl OutcomeStability {
+    fn observe(
+        &mut self,
+        now: tokio::time::Instant,
+        fingerprint: u64,
+        passing: bool,
+        required: Duration,
+    ) -> bool {
+        if !passing {
+            self.fingerprint = None;
+            self.since = None;
+            return false;
+        }
+        if required.is_zero() {
+            return true;
+        }
+        if self.fingerprint != Some(fingerprint) {
+            self.fingerprint = Some(fingerprint);
+            self.since = Some(now);
+            return false;
+        }
+        self.since
+            .is_some_and(|since| now.duration_since(since) >= required)
+    }
+}
+
+fn semantic_fingerprint(nodes: &[SemanticNode]) -> u64 {
+    let mut fingerprint = DefaultHasher::new();
+    nodes.len().hash(&mut fingerprint);
+    for node in nodes {
+        node.dom_id.hash(&mut fingerprint);
+        node.id.hash(&mut fingerprint);
+        node.parent.hash(&mut fingerprint);
+        node.role.hash(&mut fingerprint);
+        node.name.hash(&mut fingerprint);
+        node.value.hash(&mut fingerprint);
+        node.enabled.hash(&mut fingerprint);
+        node.visible.hash(&mut fingerprint);
+        node.selected.hash(&mut fingerprint);
+        node.bounds
+            .map(|bounds| bounds.map(f64::to_bits))
+            .hash(&mut fingerprint);
+        node.slot.hash(&mut fingerprint);
+    }
+    fingerprint.finish()
 }
 
 /// Wait for the declared result, not merely for a tree that already contains
@@ -1704,19 +1795,32 @@ async fn settle_for_outcome(
     before: &[SemanticNode],
     action_target: Option<&str>,
     action_node_id: Option<u64>,
-) -> Result<AgentSnapshot> {
+) -> Result<(AgentSnapshot, Option<String>)> {
     let outcome_ms = if check.outcome_timeout_ms == 0 {
         900
     } else {
         check.outcome_timeout_ms
     };
     let deadline = tokio::time::Instant::now() + check_timeout(outcome_ms);
+    let stable_for = Duration::from_millis(check.stable_for_ms);
+    let mut stability = OutcomeStability::default();
     loop {
         let (after, _) = inspect(client).await?;
-        if outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok()
-            || tokio::time::Instant::now() >= deadline
-        {
-            return Ok(after);
+        let now = tokio::time::Instant::now();
+        let passing =
+            outcome_verdict(check, before, &after.nodes, action_target, action_node_id).is_ok();
+        if stability.observe(now, semantic_fingerprint(&after.nodes), passing, stable_for) {
+            return Ok((after, None));
+        }
+        if now >= deadline {
+            let error = (passing && !stable_for.is_zero()).then(|| {
+                format!(
+                    "rendered outcome did not remain complete and unchanged for {}ms within {}ms",
+                    stable_for.as_millis(),
+                    check_timeout(outcome_ms).as_millis()
+                )
+            });
+            return Ok((after, error));
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -4947,12 +5051,12 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryClass, arrived_without_navigation, duplicate_dom_ids, generated_dom_id,
-        inventory_class, is_pagination_control, name_matches, named_document_is_active,
-        named_document_is_active_with_permanent, named_document_opener_for, outcome_check_ids,
-        outcome_verdict, pagination_advanced, painted_bounds, painted_named, pixels_change,
-        pixels_hold, resolved_action_target, rgb_pixels_hold, saved_controls,
-        selector_matches_node, stable_arrival,
+        InventoryClass, OutcomeStability, arrived_without_navigation, duplicate_dom_ids,
+        generated_dom_id, inventory_class, is_pagination_control, name_matches,
+        named_document_is_active, named_document_is_active_with_permanent,
+        named_document_opener_for, outcome_check_ids, outcome_verdict, pagination_advanced,
+        painted_bounds, painted_named, pixels_change, pixels_hold, resolved_action_target,
+        rgb_pixels_hold, saved_controls, selector_matches_node, stable_arrival,
     };
     use crate::app::{AppProfile, SurfaceSpec};
     use crate::interaction::parse_key_chord;
@@ -4960,6 +5064,32 @@ mod tests {
     use crate::target::{exact_selector_matches_node, retain_exact_candidates, viewport_for_node};
     use blitz_control_protocol::{AgentSnapshot, CapturedImage, SemanticNode};
     use std::collections::HashSet;
+    use std::time::Duration;
+
+    #[test]
+    fn outcome_stability_restarts_when_late_content_changes_the_document() {
+        let start = tokio::time::Instant::now();
+        let required = Duration::from_millis(150);
+        let mut stability = OutcomeStability::default();
+
+        assert!(!stability.observe(start, 7, true, required));
+        assert!(!stability.observe(start + Duration::from_millis(100), 7, true, required));
+        assert!(!stability.observe(start + Duration::from_millis(125), 8, true, required));
+        assert!(!stability.observe(start + Duration::from_millis(250), 8, true, required));
+        assert!(stability.observe(start + Duration::from_millis(275), 8, true, required));
+    }
+
+    #[test]
+    fn failed_outcome_clears_a_partial_stability_window() {
+        let start = tokio::time::Instant::now();
+        let required = Duration::from_millis(100);
+        let mut stability = OutcomeStability::default();
+
+        assert!(!stability.observe(start, 3, true, required));
+        assert!(!stability.observe(start + Duration::from_millis(75), 3, false, required));
+        assert!(!stability.observe(start + Duration::from_millis(100), 3, true, required));
+        assert!(stability.observe(start + Duration::from_millis(200), 3, true, required));
+    }
 
     fn component(name: &str, enabled: bool, visible: bool) -> SemanticNode {
         SemanticNode {
@@ -5238,12 +5368,17 @@ mod tests {
             text: None,
             key: None,
             key_on: None,
+            scroll_over: None,
+            scroll_ticks: 0,
+            scroll_delta: 0.0,
             compare: None,
             expect_size: None,
+            expect_count: None,
             covers: Vec::new(),
             press: false,
             settle_after_ms: 0,
             outcome_timeout_ms: 0,
+            stable_for_ms: 0,
             destructive: false,
             subject: subject.into(),
             expect: Expect::Paints,
@@ -5460,6 +5595,31 @@ mod tests {
         let before = component("Refresh generation 1", true, true);
         let after = component("Refresh generation 2", true, true);
         assert!(outcome_verdict(&check, &[before], &[after], None, None).is_ok());
+    }
+
+    #[test]
+    fn value_outcome_can_belong_to_a_different_node_than_the_clicked_action() {
+        let mut check = check("reset-opacity", Some("Reset to default"), "Glass opacity");
+        check.expect = Expect::ValueChanges;
+
+        let reset = component("Reset to default", true, true);
+        let mut before_slider = component("Glass opacity", true, true);
+        before_slider.id = 2;
+        before_slider.role = "slider".into();
+        before_slider.value = Some("100".into());
+        let mut after_slider = before_slider.clone();
+        after_slider.value = Some("55".into());
+
+        assert!(
+            outcome_verdict(
+                &check,
+                &[reset.clone(), before_slider],
+                &[reset, after_slider],
+                Some("Reset to default"),
+                Some(1),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
