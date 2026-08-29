@@ -3142,7 +3142,8 @@ fn duplicate_dom_ids(nodes: &[SemanticNode]) -> std::collections::HashSet<String
     }
     counts
         .into_iter()
-        .filter_map(|(dom_id, count)| (count > 1).then(|| dom_id.to_owned()))
+        .filter(|(_, count)| *count > 1)
+        .map(|(dom_id, _)| dom_id.to_owned())
         .collect()
 }
 
